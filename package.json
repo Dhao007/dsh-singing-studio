@@ -1,0 +1,75 @@
+{
+  "name": "dsh-singing-studio",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "DSH 唱歌工作室：环境一键安装、RVC 音色训练、F0 分析与八度规划、RVC / SoulX-Singer 翻唱生成。",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg",
+    "src",
+    "engine",
+    "profiles",
+    "vendor",
+    "docs",
+    "LICENSE",
+    "THIRD_PARTY_NOTICES.md",
+    "CHANGELOG.md",
+    "README.md"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "slots"
+      ],
+      "external": [
+        "react"
+      ]
+    }
+  },
+  "engines": {
+    "node": ">=22.13.0",
+    "dsh": ">=0.2.1-rc.3"
+  },
+  "license": "MIT",
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "rvc",
+    "soulx",
+    "singing",
+    "voice-conversion",
+    "翻唱",
+    "音色训练"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Dhao007/dsh-singing-studio.git"
+  },
+  "homepage": "https://github.com/Dhao007/dsh-singing-studio#readme",
+  "bugs": {
+    "url": "https://github.com/Dhao007/dsh-singing-studio/issues"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
+  "scripts": {
+    "pack:release": "npm pack --pack-destination dist",
+    "market:index": "node scripts/market-index.mjs",
+    "verify": "node --check index.js && node --check client.js && node --check src/env-upload.js && node --check scripts/market-index.mjs && npm pack --dry-run"
+  }
+}

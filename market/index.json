@@ -1,0 +1,101 @@
+{
+  "format": 1,
+  "title": {
+    "zh": "唱歌工作室 · 插件源",
+    "en": "Singing Studio · Plugin Index"
+  },
+  "description": {
+    "zh": "唱歌工作室的 DSH 插件市场索引。",
+    "en": "DSH plugin-market index for Singing Studio."
+  },
+  "metadata": {
+    "categories": {
+      "audio": {
+        "title": {
+          "zh": "音频与音乐",
+          "en": "Audio & Music"
+        }
+      }
+    },
+    "labels": {
+      "rvc": {
+        "title": {
+          "zh": "RVC",
+          "en": "RVC"
+        }
+      },
+      "soulx": {
+        "title": {
+          "zh": "SoulX",
+          "en": "SoulX"
+        }
+      },
+      "singing": {
+        "title": {
+          "zh": "唱歌",
+          "en": "Singing"
+        }
+      }
+    },
+    "sortKeys": {
+      "published": {
+        "title": {
+          "zh": "发布时间",
+          "en": "Published"
+        },
+        "order": "desc"
+      }
+    }
+  },
+  "plugins": [
+    {
+      "name": "dsh-singing-studio",
+      "title": {
+        "zh": "唱歌工作室",
+        "en": "Singing Studio"
+      },
+      "description": {
+        "zh": "上传歌曲，分析 F0 与 RVC 音域，自动八度规划；支持 RVC 与 SoulX-Singer 零样本换声，跨平台依赖准备与 GPU/CPU 常驻。",
+        "en": "Upload a song, inspect F0 against a voice range, plan octave folds, and render with RVC or SoulX-Singer zero-shot SVC. Cross-platform setup and resident GPU/CPU workers."
+      },
+      "icon": "https://raw.githubusercontent.com/Dhao007/dsh-singing-studio/main/assets/icon-180.png",
+      "homepage": "https://github.com/Dhao007/dsh-singing-studio",
+      "repository": {
+        "url": "https://github.com/Dhao007/dsh-singing-studio"
+      },
+      "metadata": {
+        "category": "audio",
+        "keywords": [
+          "dsh",
+          "dsh-plugin",
+          "rvc",
+          "soulx",
+          "singing",
+          "翻唱",
+          "音色训练"
+        ],
+        "labels": [
+          "rvc",
+          "soulx",
+          "singing"
+        ],
+        "sortKeys": {
+          "published": 1794399044
+        }
+      },
+      "versions": [
+        {
+          "version": "0.1.0",
+          "publishTimestamp": 1794399044,
+          "source": {
+            "type": "npm",
+            "registry": "https://registry.npmmirror.com/"
+          },
+          "engines": {
+            "dsh": ">=0.2.1-rc.3"
+          }
+        }
+      ]
+    }
+  ]
+}

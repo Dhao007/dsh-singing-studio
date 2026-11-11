@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "唱歌工作室",
+    "description": "上传歌曲，分析 F0 与 RVC 音域，自动八度规划；支持 RVC 与 SoulX-Singer 零样本换声，跨平台依赖准备与 GPU/CPU 常驻。"
+  }
+}

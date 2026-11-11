@@ -1,0 +1,44 @@
+# Dependencies / build output
+node_modules/
+dist/
+*.tgz
+coverage/
+
+# Python caches
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.ruff_cache/
+.venv*/
+venv/
+
+# Local model / dataset / audio artifacts (never commit these)
+*.pth
+*.pt
+*.onnx
+*.ckpt
+*.safetensors
+*.wav
+*.mp3
+*.flac
+*.m4a
+*.index
+
+# Local logs and environment
+client.log
+*.log
+npm-debug.log*
+.npmrc
+.env
+.env.*
+.DS_Store
+
+# OS / editor
+Thumbs.db
+.idea/
+.vscode/
+
+# Maintainer-only files (kept locally, not published)
+PUBLISHING.md
+market/entry.example.yml

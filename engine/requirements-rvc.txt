@@ -1,0 +1,15 @@
+numpy<2
+scipy>=1.11,<2
+librosa>=0.10,<0.11
+soundfile>=0.12
+faiss-cpu
+tensorboard>=2.9
+scikit-learn>=1.0
+transformers>=4.40,<5
+av>=12
+praat-parselmouth>=0.4
+PyYAML
+tqdm
+einops
+imageio-ffmpeg
+setuptools<81

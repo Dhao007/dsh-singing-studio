@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Singing Studio",
+    "description": "Upload a song, inspect F0 against a voice range, plan octave folds, and render with RVC or SoulX-Singer zero-shot SVC. Cross-platform setup and resident GPU/CPU workers."
+  }
+}
