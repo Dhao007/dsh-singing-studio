@@ -1,5 +1,52 @@
 # Changelog
 
+## 未发布
+
+- 设置页新增「人声分离 → 分轨速度」：标准（overlap 4，模型默认）、快速（2，约快一倍）、极速（1，最快但接缝风险更高）。只影响之后新做的分轨；已有 `vocals.wav` / `instrumental.wav` 会继续复用，不会自动重跑。
+- 人声分离进行中不再显示「预计剩余」，改为「已用 mm:ss」，也不再塞入 audio-separator 的原始 tqdm 行：它的批次百分比在模型加载和首个批次会长时间停在 12%，按平均速度外推会让剩余时间越算越长；进入 F0 分析后仍显示 ETA。
+- 整理 RVC 训练页：把「训练新音色 / 导入已有模型 / SoulX 音色」收进顶部模式标签，同屏只显示一套表单；训练数据、参数和开始按钮合并为一张卡片，历史模型移到右侧；字段说明改为悬浮 tooltip，不再给每个标签加 ⓘ，并移除「免训练」「零样本」等分类标签和重复的环境说明。全局卡片标题与设置字段也改用悬浮提示，设置页只在有改动时显示保存栏。
+- 人声分离进度文案精简为「BS-Roformer 分离中 · Mac / CPU 较慢」，不再在进度条旁展开完整时长说明。
+- 训练结果卡删除「可试听轮次」和下面的轮次按钮；「用这个音色去制作」会自动在最终模型与已导出的可试听轮次中选拟合度最高的一份，调用 `/train/use` 恢复对应模型后进入制作台。
+- 修复「当前音色没有参考音频」的「去填写」跳转：现在会打开 RVC训练页并滚动、聚焦到 SoulX 零样本音色的「参考音频路径」输入框，不再跳到已移除的默认参考音频设置。
+- 移除 SoulX 零样本音色卡片里的「默认参考音频（RVC 音色用）」输入，避免和「参考音频路径」重复；创建零样本音色仍用「参考音频路径」，RVC 音色的兜底默认值继续从已保存的 `settings.json → soulxPromptWav` 读取。
+- 把「制作台设置」里的 SoulX-SVC 参数（设备、步数、CFG、参考截取）移到「RVC训练 → SoulX 零样本音色」卡片内，放进默认折叠的「SoulX-SVC 高级参数」，并带独立保存/撤销栏。
+- 预加载状态跨插件重进恢复：根据 `/state` 里常驻 Worker 的状态重建 `warmups`，离开再回来仍显示 100% 绿色圆圈和「模型已加载」，不会只剩文字。
+- 「设备与常驻」推理设备改为「auto（待加载）」，加载后按 Worker 实际设备显示「auto（GPU）/ auto（GPU · 型号）/ auto（CPU）」，不再在加载前直接写死 CPU。
+- 「设备与常驻」的音色模型卡改为 RVC 音色下拉：选中的音色与制作台当前音色共用，预加载 RVC 会加载这个模型；RVC 已加载其他模型时会显示「加载所选模型」，不用先卸载。
+- 修复 RVC / SoulX Worker 启动时 `cannot import name 'HubertModel' from 'transformers'`：新增的 `engine/profile.py` 与 Python 标准库 `profile` 同名，Worker 把 `engine` 放进 `sys.path` 后遮蔽了标准库，导致 transformers 懒加载异常；脚本改名为 `engine/build_profile.py`，并更新模型 Profile / SoulX 音色生成调用。
+- 修复 audio-separator 0.48 启动报 `ModuleNotFoundError: No module named 'onnxruntime'`：分离器 venv 安装依赖补上 `onnxruntime>=1.17`，环境检查会检测 `onnxruntime`，已存在分离模型但缺模块时「一键安装」只补装缺的模块；当前机器的 venv 已补装 1.23.2。
+- 新增 SoulX 零样本音色：在「RVC训练」页顶部与「已有模型权重」并排填参考音频和显示名即可创建，插件用 RMVPE 从参考音频统计音域并写入 `profiles/<音色id>.json`；Profile 带 `kind: soulx` / 空 `model`，不需要 RVC `.pth`。音色选择器支持这类音色，SoulX 后端可用，RVC 后端会阻止并提示切换。
+- 修复 SoulX 后端只检查音色 Profile 的 `promptWav`、忽略「制作台设置」默认参考音频的问题：前端可用性和后端取音频都改为 Profile `promptWav` 优先、默认参考音频兜底；都没有时提示并提供「去填写」入口。
+- 训练页顶部新增「已有模型权重」：把模型路径校验移到最前面，增加训练数据路径，可直接用训练数据生成音域 Profile 并加入模型库，不需要重新训练；训练页底部的模型库列表已移除，模型选择收进顶部下拉，不再单独占一张卡片。
+- 「音高时间轴」页把「八度与乐句高级设置」移到顶部，与「选择与生成」左右两栏并存；窄屏自动堆叠。
+- 制作台「已翻唱的版本」改为分页（6 条/页），支持按歌名 / 方案 / 后端搜索，并可按生成时间选择「最新 / 最早」排序；搜索和排序会自动回到第一页。
+- 设置页移除「下载代理」卡片；已有 `proxy` 仍可写在插件数据目录的 `settings.json` 里。
+- 新增「已有模型」校验 / 导入：RVC训练页顶部可以复制已训练模型路径、查看模型格式 / Profile 状态，也可以粘贴 `.pth` 或模型包目录（例如 `models/dafeiyu-rvc-singing-v1`）做校验；校验会检查 PyTorch 检查点结构、可选的 `model_metadata.json`、Profile 的 p1 / p5 / p95 / p99 顺序与同名匹配，通过后可把 `.pth`、同名 `.index` 和 Profile 导入插件模型目录。
+- 界面整理：移除页头副标题、卡片说明、字段下方的长帮助和重复状态；页面层级交给导航 / 标签页，参数解释收进标签旁的悬浮 ⓘ tooltip。删掉未使用的概览页代码和相关样式，修正设置页路径挤成一行的问题。
+- 模型下载改为 **hf-mirror.com 优先、huggingface.co 回退**：`src/deps.js` 新增 `hfUrls()`，一键安装和「手动下载」清单共用同一份线路顺序；此前官方站优先，国内直连超时时要先白等一轮才轮到镜像。
+- Whisper base 也走镜像：下载时给 `transformers` 传 `HF_ENDPOINT=https://hf-mirror.com`（`hfEndpointEnv()`，已设过则不覆盖），否则它会直连 huggingface.co 超时。
+- pip 安装改为 **清华 PyPI 镜像优先、官方 PyPI 回退**：新增 `pipInstall()` 统一入口，覆盖升级 pip、requirements、audio-separator、imageio-ffmpeg 和训练依赖；CUDA 的 torch 轮子仍走 `download.pytorch.org`（清华只镜像 conda 的 pytorch 频道）。
+- 修复 RVC 训练报 `ModuleNotFoundError: No module named 'ffmpeg'`：`vendor/rvc/infer/audio.py` 不再 `import ffmpeg`，改用 PyAV 解码（`av` 本来就是依赖），顺带摆脱 PATH 里的 `ffmpeg` / `ffprobe`；managed 模式每次「一键安装」会同步插件内置代码（跳过 `__pycache__`），已装好的 runtime 也能自动拿到修复。
+- 新增 [`docs/DOWNLOADS.md`](docs/DOWNLOADS.md)：整理全部环境下载地址、体积、目标路径和校验方式。
+- 训练页「③ 开始训练」右侧新增「历史可试听模型」：新增 `GET /train/models`（`src/train-history.js`）扫描 `assets/weights/*_e*_s*.pth`，**每个模型名各取训练拟合度前 2 个**展示（拟合度来自 `plugin-state.json` 的 `epochFits`，缺失时用训练结果 JSON 的 `history` 兜底），行内显示拟合度百分比；点击复用 `POST /train/use` 复制成当前音色并高亮当前轮次，缺 Profile 的标黄。引擎同时会把每个 epoch 的拟合度写进 `plugin-state.json`（续训继承）。选中的轮次记录在 `data/training/voice-epochs.json`。
+- 歌曲库页「已翻唱的版本」改为列出所有歌曲的翻唱成品，每行显示对应歌名，并按生成时间倒序；不再只显示当前选中歌曲的版本。
+- 试听条从页面顶部移进「音高时间轴」卡片、坐标轴下方，歌曲库页不再显示；`<audio>` 元素仍然常驻，只隐藏界面，切到歌曲库或其他页面时自动暂停并保留进度。
+- 修复在「音高时间轴」顶部切换歌曲时自动跳回歌曲库：`pickSong` 增加 `stay` 选项，时间轴下拉只切歌不跳页；从时间轴发起分析 / 生成后也停留在时间轴，方便继续看进度和方案。
+- 制作台重排：歌曲库页的「选择素材 / 开始处理」精简成一张「选择与生成」卡（歌曲 / 音色 / 后端 + 三个按钮），放到「音高时间轴」页顶部；八度规划、F0 分析与乐句设置从设置面板移到时间轴页底部并默认折叠；歌曲库页只保留歌曲、翻唱、网易云和队列。
+- 训练页右侧卡片改名「历史训练模型」：按模型名分组，组头显示训练完成时间（`plugin-state.json` 的完成时间，缺失时用训练结果文件 / 权重文件时间兜底），组内只列拟合度前 2；修复切换模型后多处高亮的问题——现在只高亮「当前音色 + 当前轮次」这一行。
+- 制作台任务和训练任务分开：训练进行时仍可选用已有音色做分析 / 生成（任务排队，训练结束后执行），按钮不再显示「处理中…」；训练进度卡只在「RVC训练」页出现，不再出现在制作台；训练完成也不再强行把用户从制作台拉回训练页。
+- 网易云搜索结果会标「已下载」：导入时把 `neteaseId / neteaseName / neteaseArtists` 写进歌曲 `meta.json`，前端按 id 优先、显示名兜底匹配歌曲库；命中的结果显示「已下载」标签，按钮换成「打开」，直接跳到歌曲库里的那首歌。
+- 制作台去掉「八度方案」标签页：方案对比和生成按钮移到「音高时间轴」卡片下面；「音色区间」「当前方案」两张卡删除，信息精简成卡片右上角的音色 / 音域 / 覆盖率摘要。旧的 `plans` 视图 / 页 id 自动归到时间轴，跳「查看方案」时会滚到方案区。
+- 新增「每 N 轮存可试听模型」（高级参数，默认 0 关闭）：引擎把 `--audition-every` 传给训练子进程，RVC 每 N 轮用 `savee` 导出一份可直接当音色用的 `.pth`；结果卡列出「最终轮 / 第 N 轮」，点一下通过新增的 `POST /train/use` 把对应模型复制成 `models/<模型名>.pth` 并设为当前音色（Profile 沿用训练生成的那份）。重新训练时会清掉旧的可试听模型。
+- 训练进度不再显示拟合度曲线（`FitSpark` 已移除），进度推送里也不再带 `history` 数组，减少每次进度更新的数据量；结果 JSON 仍保留逐轮记录。
+- 训练中途停止会保存检查点：引擎收到取消后写一个 `STOP` 文件并等待，RVC 的 `train.py` 在当前 step 结束后保存 `G_*.pth` / `D_*.pth` 再退出（最多等 180 秒），不再直接杀进程丢掉这一轮。
+- 停止时保存的检查点按 `if_latest` 命名（`G_2333333.pth` / `D_2333333.pth`）：否则周期检查点数字更大，`latest_checkpoint_path()` 会挑到旧文件，续训反而回退一轮。
+- 未完成的训练可以继续：`plugin-state.json` 记录数据集 / 采样率 / 轮数 / 进度，`POST /train` 发现有未完成任务时返回 `code: 'train-resumable'`，前端弹「继续训练 / 重新开始」；引擎 `--resume` 跳过已完成的切分 / F0 / HuBERT，并从最新检查点接着训练。开始训练前会同步一遍 `vendor` 代码，同时补建 `assets/weights` 目录（否则最终导出模型会报父目录不存在）。
+- 环境准备改为 **uv 优先**：检测到 uv 就用 `uv venv --seed` 建 venv、`uv pip install` 装依赖；没有 uv、`uvPath` 不可执行或 uv 执行失败时退回 `python -m venv` + `pip`，源顺序仍是清华 → 官方。uv 检测额外看 `~/.local/bin`、`/opt/homebrew/bin`、`/usr/local/bin`，避免从桌面启动 DSH 时 PATH 里找不到 uv。
+- 修复 RVC 训练中途报 `ModuleNotFoundError: No module named 'matplotlib'`：训练依赖检查补上 matplotlib，`requirements-rvc.txt` 和「一键安装」都会装；TensorBoard 记频谱图要用它。
+- 修复 HuBERT 特征提取报 `require users to upgrade torch to at least v2.6`：transformers 4.56+ 在 torch 2.4.1 下拒绝 `torch.load` 加载 `pytorch_model.bin`（CVE-2025-32434）。一键安装现在把 `hubert_base/pytorch_model.bin` 转成 `model.safetensors`（新增 `engine/convert_hubert_safetensors.py`），`from_pretrained` 会自动优先用它，torch 版本保持不变。
+- 同名训练不再直接报错：`POST /train` 先返回 `code: 'train-exists'` 和冲突路径，前端弹「同名训练已存在」确认框，确认后带 `overwrite: true` 清除训练目录、`assets/weights` 权重、同名模型和音域 Profile 再开始；删除路径被限制在 managed 数据目录内。
+
 ## 0.1.0 — 2026-11-10
 
 - 预加载 RVC / SoulX 移到「设备与常驻」卡片：小圆圈百分比动画、加载中可暂停（终止 Worker）、成功后显示 100% 并可「卸载模型」只停对应进程；新增 `POST /singing/api/warmup/cancel` 和 `POST /singing/api/warmup/unload`，Worker 增加 `kill()`。

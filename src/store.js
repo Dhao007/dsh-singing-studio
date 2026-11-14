@@ -88,6 +88,8 @@ export function defaultSettings(projectRoot = '', runtimeRoot = '') {
     separatorExe: managed ? venvBin(separatorVenv, 'audio-separator') : '',
     separatorModelDir: managed ? join(runtime, 'models', 'separator') : '',
     separatorModel: 'model_bs_roformer_ep_317_sdr_12.9755.ckpt',
+    // BS-Roformer 的重叠预测窗口数：4 为标准质量，2 更快，1 最快但接缝风险更高。
+    separatorOverlap: 4,
     soulxPython: venvPython(soulxVenv),
     soulxDir,
     soulxModel: managed ? join(runtime, 'models', 'soulx', 'model-svc.pt') : join(root, 'model', 'SoulX-Singer', 'model-svc.pt'),

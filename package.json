@@ -22,7 +22,6 @@
     "docs",
     "LICENSE",
     "THIRD_PARTY_NOTICES.md",
-    "CHANGELOG.md",
     "README.md"
   ],
   "dsh": {
@@ -70,6 +69,6 @@
   "scripts": {
     "pack:release": "npm pack --pack-destination dist",
     "market:index": "node scripts/market-index.mjs",
-    "verify": "node --check index.js && node --check client.js && node --check src/env-upload.js && node --check scripts/market-index.mjs && npm pack --dry-run"
+    "verify": "node --check index.js && node --check client.js && node --check src/model-inspect.js && node --check src/model-profile.js && node --check src/soulx-voice.js && node --check src/voices.js && node --check src/env-upload.js && node --check src/train-history.js && node --check scripts/market-index.mjs && npm pack --dry-run"
   }
 }

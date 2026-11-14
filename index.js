@@ -1,4 +1,4 @@
-import { appendFileSync, existsSync, mkdirSync, readdirSync, statSync, writeFileSync } from 'node:fs'
+import { appendFileSync, copyFileSync, existsSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { extname, isAbsolute, join } from 'node:path'
 import { homedir } from 'node:os'
 import { fileURLToPath } from 'node:url'
@@ -10,12 +10,16 @@ import {
   decodeToWav, mix, probeDuration, separate, streamFile,
 } from './src/engine.js'
 import { WorkerClient } from './src/workers.js'
-import { checkDependencies, downloadManifest, invalidateDeps, run, setupAll } from './src/deps.js'
+import { checkDependencies, downloadManifest, invalidateDeps, run, setupAll, syncVendorCode } from './src/deps.js'
 import { searchSongs, songUrl, USER_AGENT } from './src/netease.js'
 import {
   dataDir, defaultSettings, ensureDir, isInside, readJson, sha1, writeJson,
 } from './src/store.js'
 import { listVoices, resolveVoice } from './src/voices.js'
+import { importModel, inspectModelPath } from './src/model-inspect.js'
+import { buildModelProfile } from './src/model-profile.js'
+import { createSoulxVoice } from './src/soulx-voice.js'
+import { listAuditionModels } from './src/train-history.js'
 
 export const name = 'singing-studio'
 export const inject = ['webServer']
@@ -70,11 +74,20 @@ function sameId(value) {
 }
 
 function soulxPromptPath(settings, voice) {
-  const raw = String(voice?.profile?.promptWav || settings.soulxPromptWav || '')
-  if (!raw) throw new Error('SoulX-SVC 缺少音色参考音频：请在 voice profile 里配置 promptWav')
-  const file = isAbsolute(raw) ? raw : join(settings.projectRoot, raw)
-  if (!existsSync(file)) throw new Error(`SoulX-SVC 参考音频不存在：${file}`)
-  return file
+  const candidates = [
+    String(voice?.profile?.promptWav || '').trim(),
+    String(settings.soulxPromptWav || '').trim(),
+  ].filter(Boolean)
+  if (!candidates.length) {
+    throw new Error('SoulX-SVC 缺少参考音频：请在音色 Profile 配置 promptWav，或在「制作台设置」里填默认参考音频')
+  }
+  const missing = []
+  for (const raw of candidates) {
+    const file = isAbsolute(raw) ? raw : join(settings.projectRoot, raw)
+    if (existsSync(file)) return file
+    missing.push(file)
+  }
+  throw new Error(`SoulX-SVC 参考音频不存在：${missing.join('；')}`)
 }
 
 const TRAIN_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,39}$/
@@ -100,6 +113,36 @@ function resolveUserPath(settings, raw) {
   if (value === '~') value = homedir()
   else if (value.startsWith('~/') || value.startsWith('~\\')) value = join(homedir(), value.slice(2))
   return isAbsolute(value) ? value : join(settings.projectRoot || process.cwd(), value)
+}
+
+/** 上次训练留下的可续训状态；数据 / 参数对不上就不算可续。 */
+function trainResumeInfo(settings, name, dataset, sr, version, per) {
+  const expDir = join(settings.rvcDir, 'logs', name)
+  const stateFile = join(expDir, 'plugin-state.json')
+  if (!existsSync(stateFile)) return null
+  const state = readJson(stateFile, null)
+  if (!state || state.stage === 'done') return null
+  if (state.dataset && dataset && String(state.dataset) !== String(dataset)) return null
+  if (String(state.sr || '') !== sr || String(state.version || '') !== version) return null
+  if (state.per !== undefined && Number(state.per) !== Number(per)) return null
+  if (existsSync(join(settings.modelsDir, `${name}.pth`))) return null
+  let hasCheckpoint = false
+  try {
+    hasCheckpoint = readdirSync(expDir).some((file) => file.startsWith('G_') && file.endsWith('.pth'))
+  } catch {}
+  const lastEpoch = Number(state.lastEpoch) || 0
+  const slices = Number(state.slices) || 0
+  // 至少要有检查点，或者已经切出片段（可以复用切分 / F0 / HuBERT 接着做）。
+  if (!hasCheckpoint && lastEpoch <= 0 && slices <= 0) return null
+  return {
+    expDir,
+    lastEpoch,
+    totalEpochs: Number(state.epochs) || 0,
+    hasCheckpoint,
+    slices,
+    stage: String(state.stage || ''),
+    updatedAt: Number(state.updatedAt) || 0,
+  }
 }
 
 function trainingState(settings, deps) {
@@ -200,6 +243,7 @@ export function apply(ctx, config = {}) {
     separatorExe: settings.separatorExe,
     separatorModelDir: settings.separatorModelDir,
     separatorModel: settings.separatorModel,
+    separatorOverlap: settings.separatorOverlap,
     soulxPython: settings.soulxPython,
     soulxDir: settings.soulxDir,
     soulxModel: settings.soulxModel,
@@ -320,14 +364,22 @@ export function apply(ctx, config = {}) {
   }
 
   /** 把一段音频写进歌曲库；fileName 只用来取扩展名，displayName 是界面上显示的名字。 */
-  const importSongBuffer = async (buf, fileName, displayName) => {
+  const importSongBuffer = async (buf, fileName, displayName, extra = {}) => {
     if (!buf?.length) throw new Error('空文件')
     const ext = extname(fileName).toLowerCase()
     if (!AUDIO_EXT.has(ext)) throw new Error(`不支持的音频格式：${ext || '(无)'}`)
     const id = sha1(Buffer.concat([buf, Buffer.from(fileName)]))
     const dir = dataDir('songs', id)
-    if (existsSync(join(dir, 'meta.json'))) {
-      return { song: readJson(join(dir, 'meta.json')), cached: true }
+    const metaFile = join(dir, 'meta.json')
+    if (existsSync(metaFile)) {
+      const song = readJson(metaFile, null) || {}
+      // 老歌曲补上网易云 id，之后搜索就能直接按 id 判断「已下载」。
+      if (Object.keys(extra).length) {
+        const merged = { ...song, ...extra }
+        try { writeJson(metaFile, merged) } catch {}
+        return { song: merged, cached: true }
+      }
+      return { song, cached: true }
     }
     ensureDir(dir)
     const src = join(dir, `upload${ext}`)
@@ -336,6 +388,7 @@ export function apply(ctx, config = {}) {
     await decodeToWav(settings, src, wav)
     const duration = await probeDuration(settings, wav)
     const meta = {
+      ...extra,
       id,
       name: displayName || fileName,
       ext,
@@ -387,6 +440,55 @@ export function apply(ctx, config = {}) {
     const method = req.method || 'GET'
 
     if (method === 'GET' && path === '/state') return sendJson(res, 200, state())
+    if (method === 'POST' && path === '/models/inspect') {
+      try {
+        const body = await readJsonBody(req)
+        return sendJson(res, 200, {
+          ok: true,
+          inspection: inspectModelPath(settings, PLUGIN_ROOT, body.path, { profilePath: body.profilePath }),
+        })
+      } catch (error) {
+        return sendJson(res, 200, { ok: false, message: String(error?.message || error) })
+      }
+    }
+    if (method === 'POST' && path === '/models/import') {
+      try {
+        const body = await readJsonBody(req)
+        const result = importModel(settings, PLUGIN_ROOT, body.path, {
+          profilePath: body.profilePath,
+          overwrite: body.overwrite === true,
+        })
+        return sendJson(res, 200, result)
+      } catch (error) {
+        return sendJson(res, 200, { ok: false, message: String(error?.message || error) })
+      }
+    }
+    if (method === 'POST' && path === '/soulx/voices') {
+      try {
+        const body = await readJsonBody(req)
+        const result = await createSoulxVoice(settings, PLUGIN_ROOT, {
+          promptWav: body.promptWav,
+          label: body.label,
+          name: body.name,
+        })
+        return sendJson(res, 200, result)
+      } catch (error) {
+        return sendJson(res, 200, { ok: false, message: String(error?.message || error) })
+      }
+    }
+    if (method === 'POST' && path === '/models/profile') {
+      try {
+        const body = await readJsonBody(req)
+        const result = await buildModelProfile(settings, PLUGIN_ROOT, {
+          modelPath: body.modelPath,
+          datasetPath: body.datasetPath,
+          label: body.label,
+        })
+        return sendJson(res, 200, result)
+      } catch (error) {
+        return sendJson(res, 200, { ok: false, message: String(error?.message || error) })
+      }
+    }
     if (method === 'GET' && path === '/songs') return sendJson(res, 200, { ok: true, songs: songs() })
     if (method === 'GET' && path === '/jobs') return sendJson(res, 200, { ok: true, jobs: jobs.list(30) })
     if (method === 'GET' && path === '/deps') {
@@ -456,7 +558,7 @@ export function apply(ctx, config = {}) {
         if (token.cancelled) throw new Error('已暂停加载')
         if (which !== 'soulx' && body.voiceId) {
           const voice = resolveVoice(settings, PLUGIN_ROOT, String(body.voiceId))
-          await w.request('load_voice', { model: voice.file })
+          if (voice.file) await w.request('load_voice', { model: voice.file })
         }
         if (token.cancelled) throw new Error('已暂停加载')
         return sendJson(res, 200, { ok: true, cancelled: false, backend: which, worker: w.status() })
@@ -546,6 +648,7 @@ export function apply(ctx, config = {}) {
       const epochs = Math.max(1, Math.min(500, Number(body.epochs) || 20))
       const batchSize = Math.max(1, Math.min(32, Number(body.batchSize) || 4))
       const saveEvery = Math.max(1, Math.min(100, Number(body.saveEvery) || 5))
+      const auditionEvery = Math.max(0, Math.min(100, Math.trunc(Number(body.auditionEvery) || 0)))
       const per = Math.max(1, Math.min(10, Number(body.per) || 3.7))
       const nP = Math.max(1, Math.min(8, Number(body.nP) || 2))
       const useIndex = body.index !== false
@@ -560,6 +663,11 @@ export function apply(ctx, config = {}) {
           message: `训练环境还没准备好：${training.missing.map((x) => x.label).join('、') || '缺少依赖'}。请先去「环境」页一键准备。`,
           training,
         })
+      }
+      // managed 的推理 / 训练代码归插件托管：每次开始训练前同步一遍，避免 runtime 里
+      // 还是旧版本（比如没有「停止保存检查点」的 train.py）。
+      if (settings.mode === 'managed') {
+        try { syncVendorCode(settings, PLUGIN_ROOT) } catch {}
       }
       if (!['32k', '40k', '48k'].includes(sr)) return sendJson(res, 400, { ok: false, message: '采样率只能是 32k / 40k / 48k' })
       if (!['v1', 'v2'].includes(version)) return sendJson(res, 400, { ok: false, message: '版本只能是 v1 / v2' })
@@ -580,13 +688,80 @@ export function apply(ctx, config = {}) {
         })
       }
       const expDir = join(settings.rvcDir, 'logs', name)
-      if (existsSync(expDir)) {
-        let count = 0
-        try { count = readdirSync(expDir).length } catch {}
-        if (count > 0) return sendJson(res, 200, { ok: false, message: `同名训练已存在：${expDir}，请换一个模型名或先删除旧目录` })
-      }
       const modelFile = join(settings.modelsDir, `${name}.pth`)
-      if (existsSync(modelFile)) return sendJson(res, 200, { ok: false, message: `模型已存在：${modelFile}，请换一个模型名` })
+      const weightFile = join(settings.rvcDir, 'assets', 'weights', `${name}.pth`)
+      const profileFile = join(dataDir('profiles'), `${name}.json`)
+      const conflicts = []
+      let expCount = 0
+      try { expCount = existsSync(expDir) ? readdirSync(expDir).length : 0 } catch {}
+      if (expCount > 0) conflicts.push(expDir)
+      for (const file of [modelFile, weightFile, profileFile]) {
+        if (existsSync(file)) conflicts.push(file)
+      }
+
+      const wantsResume = body.resume === true
+      const resumeInfo = trainResumeInfo(settings, name, dataset, sr, version, per)
+      if (wantsResume) {
+        if (!resumeInfo) {
+          return sendJson(res, 200, { ok: false, message: '没有找到可继续的训练，请重新开始' })
+        }
+        if (resumeInfo.lastEpoch > 0 && epochs < resumeInfo.lastEpoch) {
+          return sendJson(res, 200, {
+            ok: false,
+            message: `上次已经训到第 ${resumeInfo.lastEpoch} 轮，总轮数不能小于它（当前填的是 ${epochs}）`,
+          })
+        }
+      } else if (body.overwrite !== true && resumeInfo) {
+        // 前端弹「上次训练未完成，是否继续」。
+        return sendJson(res, 200, {
+          ok: false,
+          code: 'train-resumable',
+          message: `上次训练未完成：${expDir}`,
+          resumable: resumeInfo,
+        })
+      }
+
+      if (!wantsResume && conflicts.length) {
+        // 前端弹「已有同名，是否清除掉」，确认后带 overwrite 再提交一次。
+        if (body.overwrite !== true) {
+          return sendJson(res, 200, {
+            ok: false,
+            code: 'train-exists',
+            message: `同名训练已存在：${conflicts[0]}`,
+            conflicts,
+          })
+        }
+        // 只删 managed 目录里的同名产物：训练目录、权重、模型、音域 Profile。
+        const roots = [
+          join(settings.rvcDir, 'logs'),
+          join(settings.rvcDir, 'assets', 'weights'),
+          settings.modelsDir,
+          dataDir('profiles'),
+        ]
+        for (const target of conflicts) {
+          if (!roots.some((root) => isInside(root, target))) {
+            return sendJson(res, 400, { ok: false, message: `拒绝删除路径：${target}` })
+          }
+          rmSync(target, { recursive: true, force: true })
+        }
+        // 上一轮训练每 N 轮导出的可试听模型也一起清掉，避免旧轮次混进新结果。
+        try {
+          const weightsDir = join(settings.rvcDir, 'assets', 'weights')
+          for (const file of readdirSync(weightsDir)) {
+            if (file.startsWith(`${name}_e`) && file.endsWith('.pth')) {
+              rmSync(join(weightsDir, file), { force: true })
+            }
+          }
+        } catch {}
+        try {
+          const activeFile = dataDir('training', 'voice-epochs.json')
+          const active = readJson(activeFile, {}) || {}
+          if (active[name]) {
+            delete active[name]
+            writeJson(activeFile, active)
+          }
+        } catch {}
+      }
 
       const job = jobs.create('train', async (job) => {
         const resultFile = dataDir('training', `${job.id}.json`)
@@ -602,12 +777,14 @@ export function apply(ctx, config = {}) {
           '--epochs', String(epochs),
           '--batch-size', String(batchSize),
           '--save-every', String(saveEvery),
+          '--audition-every', String(auditionEvery),
           '--per', String(per),
           '--f0-method', f0Method,
           '--n-p', String(nP),
           '--index', useIndex ? '1' : '0',
           '--pretrained', usePretrained ? '1' : '0',
           '--device', device,
+          '--resume', wantsResume ? '1' : '0',
           '--models-dir', settings.modelsDir,
           '--profiles-dir', dataDir('profiles'),
           '--result', resultFile,
@@ -632,8 +809,61 @@ export function apply(ctx, config = {}) {
         const result = readJson(resultFile, null)
         if (!result) throw new Error('训练进程结束但没有写出结果文件')
         return result
-      }, { datasetPath: dataset, name, label, sr, version, epochs })
+      }, { datasetPath: dataset, name, label, sr, version, epochs, auditionEvery, resume: wantsResume })
       return sendJson(res, 200, { ok: true, job: jobs.get(job.id) })
+    }
+
+    if (method === 'POST' && path === '/train/use') {
+      const body = await readJsonBody(req)
+      const name = String(body.name || '').trim()
+      const epoch = Math.trunc(Number(body.epoch) || 0)
+      if (!TRAIN_NAME_RE.test(name)) return sendJson(res, 400, { ok: false, message: '模型名不合法' })
+      if (epoch < 0) return sendJson(res, 400, { ok: false, message: '轮次不合法' })
+      const weightsDir = join(settings.rvcDir, 'assets', 'weights')
+      let picked = ''
+      if (epoch === 0) {
+        // 0 = 最终模型
+        const finalFile = join(weightsDir, `${name}.pth`)
+        if (existsSync(finalFile)) picked = finalFile
+      } else {
+        try {
+          const prefix = `${name}_e${epoch}_s`
+          const matches = readdirSync(weightsDir)
+            .filter((file) => file.startsWith(prefix) && file.endsWith('.pth'))
+            .sort((a, b) => Number(a.slice(prefix.length, -4)) - Number(b.slice(prefix.length, -4)))
+          if (matches.length) picked = join(weightsDir, matches[matches.length - 1])
+        } catch {}
+      }
+      if (!picked || !existsSync(picked)) {
+        return sendJson(res, 200, { ok: false, message: epoch === 0 ? '没有找到最终模型' : `没有找到第 ${epoch} 轮的可试听模型` })
+      }
+      ensureDir(settings.modelsDir)
+      const modelPath = join(settings.modelsDir, `${name}.pth`)
+      try {
+        copyFileSync(picked, modelPath)
+      } catch (error) {
+        return sendJson(res, 200, { ok: false, message: `复制失败：${String(error && error.message ? error.message : error)}` })
+      }
+      try {
+        const activeFile = dataDir('training', 'voice-epochs.json')
+        const active = readJson(activeFile, {}) || {}
+        active[name] = { epoch, at: Date.now() }
+        writeJson(activeFile, active)
+      } catch {}
+      const profilePath = join(dataDir('profiles'), `${name}.json`)
+      const hasProfile = existsSync(profilePath)
+      return sendJson(res, 200, {
+        ok: true,
+        voiceId: name,
+        epoch,
+        modelPath,
+        profilePath: hasProfile ? profilePath : '',
+        hasProfile,
+      })
+    }
+
+    if (method === 'GET' && path === '/train/models') {
+      return sendJson(res, 200, { ok: true, ...listAuditionModels(settings) })
     }
 
     if (method === 'GET' && path.startsWith('/jobs/')) {
@@ -731,7 +961,11 @@ export function apply(ctx, config = {}) {
         const buf = Buffer.from(await response.arrayBuffer())
         if (buf.length > maxBytes) throw new Error(`文件太大了（最多 ${Math.round(maxBytes / 1024 / 1024)}MB）`)
         const ext = AUDIO_EXT.has(`.${found.type}`) ? `.${found.type}` : '.mp3'
-        const result = await importSongBuffer(buf, `${label}${ext}`, label)
+        const result = await importSongBuffer(buf, `${label}${ext}`, label, {
+          neteaseId: id,
+          neteaseName: rawName,
+          neteaseArtists: artists,
+        })
         return sendJson(res, 200, { ok: true, ...result })
       } catch (error) {
         return sendJson(res, 200, { ok: false, message: String(error.message || error) })
@@ -887,15 +1121,15 @@ export function apply(ctx, config = {}) {
       if (!sameId(analysisId)) return sendJson(res, 400, { ok: false, message: '非法分析 ID' })
       const analysis = readJson(dataDir('analysis', `${analysisId}.json`), null)
       if (!analysis) return sendJson(res, 404, { ok: false, message: '分析不存在' })
-      const voice = resolveVoice(settings, PLUGIN_ROOT, String(body.voiceId || analysis.voiceId || ''))
+      const backend = String(body.backend || 'rvc')
+      if (!['rvc', 'soulx'].includes(backend)) return sendJson(res, 400, { ok: false, message: `未知后端：${backend}` })
+      const voice = resolveVoice(settings, PLUGIN_ROOT, String(body.voiceId || analysis.voiceId || ''), { backend })
       const songDir = dataDir('songs', analysis.songId)
       const vocals = join(songDir, 'vocals.wav')
       const instrumental = join(songDir, 'instrumental.wav')
       if (!existsSync(vocals)) return sendJson(res, 404, { ok: false, message: '人声分轨不存在' })
       const plan = body.plan && Array.isArray(body.plan.shifts) ? body.plan : null
       if (!plan) return sendJson(res, 400, { ok: false, message: '缺少 plan.shifts' })
-      const backend = String(body.backend || 'rvc')
-      if (!['rvc', 'soulx'].includes(backend)) return sendJson(res, 400, { ok: false, message: `未知后端：${backend}` })
 
       // 成品缓存：同一个分析 + 音色 + 后端 + 八度方案 + 渲染参数，只生成一次。
       const cacheKey = sha1([

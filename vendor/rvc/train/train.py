@@ -92,6 +92,38 @@ from train.process_ckpt import savee
 
 global_step = 0
 
+# 引擎在 logs/<模型名>/ 下放一个 STOP 文件；训练在当前 step 结束后保存检查点并退出，
+# 下次用同一模型名继续训练时 RVC 会自动从最新 G_/D_ 检查点恢复。
+STOP_FILE = "STOP"
+
+
+def stop_requested():
+    try:
+        return os.path.exists(os.path.join(hps.model_dir, STOP_FILE))
+    except Exception:
+        return False
+
+
+def save_training_checkpoints(net_g, net_d, optim_g, optim_d, epoch, step):
+    # -l 1（if_latest）时周期检查点固定叫 G_2333333.pth / D_2333333.pth；
+    # 停止时也写这个名字，否则 latest_checkpoint_path() 会挑到更大的数字，
+    # 续训反而回退到上一次周期保存的轮次。
+    name = 2333333 if hps.if_latest == 1 else step
+    utils.save_checkpoint(
+        net_g,
+        optim_g,
+        hps.train.learning_rate,
+        epoch,
+        os.path.join(hps.model_dir, "G_{}.pth".format(name)),
+    )
+    utils.save_checkpoint(
+        net_d,
+        optim_d,
+        hps.train.learning_rate,
+        epoch,
+        os.path.join(hps.model_dir, "D_{}.pth".format(name)),
+    )
+
 
 class EpochRecorder:
     def __init__(self):
@@ -328,6 +360,8 @@ def run(rank, n_gpus, hps, logger, use_ddp):
             )
         scheduler_g.step()
         scheduler_d.step()
+        if stop_requested():
+            return
 
 
 def train_and_evaluate(
@@ -593,6 +627,23 @@ def train_and_evaluate(
                     scalars=scalar_dict,
                 )
         global_step += 1
+        if stop_requested():
+            # 所有 rank 都在同一个 step 边界退出，rank 0 负责落盘。
+            if rank == 0:
+                logger.info(i18n("收到停止请求：正在保存检查点…"))
+                try:
+                    # 检查点轮次记成当前轮：续训会从这一轮开头重跑，
+                    # 和 plugin-state.json 里的 lastEpoch 保持一致。
+                    save_training_checkpoints(
+                        net_g, net_d, optim_g, optim_d, epoch, global_step
+                    )
+                    logger.info(
+                        i18n("检查点已保存：G_%s.pth / D_%s.pth（第 %s 轮，step %s）")
+                        % (global_step, global_step, epoch, global_step)
+                    )
+                except Exception as error:
+                    logger.error(i18n("保存检查点失败：%s") % error)
+            return
     # /Run steps
 
     if epoch % hps.save_every_epoch == 0 and rank == 0:
@@ -647,6 +698,36 @@ def train_and_evaluate(
                     ),
                 )
             )
+
+    # 每 N 轮导出一份可直接当音色用的 .pth（默认关闭，由引擎通过环境变量打开）。
+    audition_every = 0
+    try:
+        audition_every = int(os.environ.get("RVC_AUDITION_EVERY", "0") or 0)
+    except Exception:
+        audition_every = 0
+    if (
+        audition_every > 0
+        and rank == 0
+        and epoch % audition_every == 0
+        and epoch < int(hps.total_epoch)
+    ):
+        if hasattr(net_g, "module"):
+            ckpt = net_g.module.state_dict()
+        else:
+            ckpt = net_g.state_dict()
+        logger.info(i18n("正在保存第 %s 轮的可试听模型…") % epoch)
+        try:
+            savee(
+                ckpt,
+                hps.sample_rate,
+                hps.if_f0,
+                "%s_e%s_s%s" % (hps.name, epoch, global_step),
+                epoch,
+                hps.version,
+                hps,
+            )
+        except Exception as error:
+            logger.error(i18n("保存可试听模型失败：%s") % error)
 
     if rank == 0:
         logger.info(i18n("====> 轮次：{} {}").format(epoch, epoch_recorder.record()))

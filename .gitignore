@@ -14,6 +14,7 @@ __pycache__/
 venv/
 
 # Local model / dataset / audio artifacts (never commit these)
+models/
 *.pth
 *.pt
 *.onnx

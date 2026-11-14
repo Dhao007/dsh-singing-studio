@@ -107,19 +107,25 @@ export async function separate(settings, input, outDir, { job, report } = {}) {
   for (const old of ['vocals.wav', 'instrumental.wav']) {
     try { if (existsSync(join(outDir, old))) renameSync(join(outDir, old), join(outDir, `${old}.old-${Date.now()}`)) } catch {}
   }
-  report?.('分离人声', 0.12, 'BS-Roformer 分离中，可能需要 1–3 分钟')
+  // 进度条旁只留一句慢速提示，完整时长说明放到文档里。
+  const speedHint = process.platform === 'darwin' ? 'Mac / CPU 较慢' : 'CPU 较慢'
+  // BS-Roformer 的 overlap 是重叠预测窗口数；4 是模型默认值，降到 2 / 1 可明显提速。
+  const overlap = [1, 2, 4, 8].includes(Number(settings.separatorOverlap)) ? Number(settings.separatorOverlap) : 4
+  report?.('分离人声', 0.12, `BS-Roformer 分离中 · ${speedHint}`)
   await run(settings.separatorExe, [
     input,
     '--model_filename', settings.separatorModel,
     '--model_file_dir', settings.separatorModelDir,
     '--output_dir', outDir,
     '--output_format', 'WAV',
+    '--mdxc_overlap', String(overlap),
   ], {
     job,
     timeoutMs: 30 * 60_000,
     onLine: (line) => {
       const m = /(\d{1,3})%/.exec(line)
-      if (m) report?.('分离人声', 0.12 + 0.42 * (Number(m[1]) / 100), line.slice(-160))
+      // 不要把 tqdm 的原始进度行塞进消息；顶部已有百分比，消息保留模型/慢速提示即可。
+      if (m) report?.('分离人声', 0.12 + 0.42 * (Number(m[1]) / 100))
     },
   })
   const { vocals, inst } = pickStems(outDir)

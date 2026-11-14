@@ -4,6 +4,7 @@ librosa>=0.10,<0.11
 soundfile>=0.12
 faiss-cpu
 tensorboard>=2.9
+matplotlib>=3.7
 scikit-learn>=1.0
 transformers>=4.40,<5
 av>=12

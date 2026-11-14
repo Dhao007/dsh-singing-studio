@@ -1,5 +1,4 @@
 import platform, os
-import ffmpeg
 import numpy as np
 import av
 from io import BytesIO
@@ -36,7 +35,7 @@ if not _FORCE_CPU_AUDIO:
     except Exception:
         _USE_TORCHAUDIO_GPU = False
 
-AUDIO_LOAD_BACKEND = "torchaudio_cuda" if _USE_TORCHAUDIO_GPU else "ffmpeg"
+AUDIO_LOAD_BACKEND = "torchaudio_cuda" if _USE_TORCHAUDIO_GPU else "av"
 TORCHAUDIO_GPU_ENABLED = _USE_TORCHAUDIO_GPU
 AUDIO_DEVICE = _AUDIO_DEVICE
 AUDIO_DTYPE = _AUDIO_DTYPE
@@ -96,62 +95,83 @@ def transcode_audio_file(input_path, output_path, format):
         raise
 
 
+def _av_audio_stream(container):
+    stream = next((item for item in container.streams if item.type == "audio"), None)
+    if stream is None:
+        raise ValueError("Input contains no audio stream")
+    return stream
+
+
+def _av_sample_rate(container, stream):
+    rate = getattr(stream, "rate", None)
+    if not rate and getattr(stream, "codec_context", None) is not None:
+        rate = getattr(stream.codec_context, "sample_rate", None)
+    if not rate:
+        rate = getattr(container, "rate", None)
+    return int(rate or 0)
+
+
 def _probe_audio(file):
-    info = ffmpeg.probe(file, cmd="ffprobe")
-    stream = next(
-        item for item in info.get("streams", []) if item.get("codec_type") == "audio"
-    )
-    return int(stream["sample_rate"]), int(stream.get("channels", 1))
+    with av.open(file, "r") as container:
+        stream = _av_audio_stream(container)
+        layout = getattr(stream, "layout", None)
+        channels = getattr(layout, "nb_channels", 0) if layout is not None else 0
+        if not channels and getattr(stream, "codec_context", None) is not None:
+            channels = getattr(stream.codec_context, "channels", 1) or 1
+        return _av_sample_rate(container, stream), max(1, int(channels or 1))
 
 
-def _decode_audio_ffmpeg(file):
-    """Decode one audio stream without changing its sample rate."""
-    source_sr, channels = _probe_audio(file)
-    channels = max(1, channels)
-    out, _ = (
-        ffmpeg.input(file, threads=0)
-        .output(
-            "-",
-            format="f32le",
-            acodec="pcm_f32le",
-            ac=channels,
-            ar=source_sr,
+def _av_channel_layout(stream):
+    layout = getattr(stream, "layout", None)
+    name = getattr(layout, "name", "") if layout is not None else ""
+    if name:
+        return name
+    ctx = getattr(stream, "codec_context", None)
+    channels = int((getattr(ctx, "channels", 1) if ctx is not None else 1) or 1)
+    return {1: "mono", 2: "stereo"}.get(channels, "stereo")
+
+
+def _decode_audio_av(file):
+    """Decode the first audio stream to channel-first float32 at its native rate.
+
+    用 PyAV 解码（av 本来就是依赖），不再 import ffmpeg-python，也不依赖 PATH 里的
+    ffmpeg / ffprobe：managed 安装只装了 imageio-ffmpeg，它只有一个 ffmpeg 可执行文件。
+    """
+    from av.audio.resampler import AudioResampler
+
+    with av.open(file, "r") as container:
+        stream = _av_audio_stream(container)
+        source_sr = _av_sample_rate(container, stream)
+        if not source_sr:
+            raise ValueError("Cannot determine sample rate: %s" % file)
+        resampler = AudioResampler(
+            format="fltp",
+            layout=_av_channel_layout(stream),
+            rate=source_sr,
         )
-        .run(cmd=["ffmpeg", "-nostdin"], capture_stdout=True, capture_stderr=True)
-    )
-    samples = np.frombuffer(out, np.float32)
-    usable = samples.size - samples.size % channels
-    samples = samples[:usable]
-    return samples.reshape(-1, channels).T.copy(), source_sr
+        chunks = []
+        for frame in container.decode(stream):
+            for out in resampler.resample(frame):
+                chunks.append(out.to_ndarray())
+        for out in resampler.resample(None):
+            chunks.append(out.to_ndarray())
+        if not chunks:
+            raise ValueError("No audio frames decoded: %s" % file)
+        samples = np.concatenate(chunks, axis=1) if len(chunks) > 1 else chunks[0]
+    return np.ascontiguousarray(samples, dtype=np.float32), source_sr
 
 
-def _load_audio_ffmpeg(file, sr, force_mono=True):
+def _load_audio_av(file, sr, force_mono=True):
     # https://github.com/openai/whisper/blob/main/whisper/audio.py#L26
-    # Keep the original FFmpeg path for CPU and unsupported decoders.  When
-    # stereo is requested, retain all source channels instead of forcing ac=1.
-    channels = 1
-    if not force_mono:
-        _, channels = _probe_audio(file)
-        channels = max(1, channels)
-    output = {
-        "format": "f32le",
-        "acodec": "pcm_f32le",
-        "ar": sr,
-    }
+    # 单声道返回 [T]，保留声道时返回 [C, T]；重采样仍然走 librosa。
+    audio, source_sr = _decode_audio_av(file)
     if force_mono:
-        output["ac"] = 1
-    else:
-        output["ac"] = channels
-    out, _ = (
-        ffmpeg.input(file, threads=0)
-        .output("-", **output)
-        .run(cmd=["ffmpeg", "-nostdin"], capture_stdout=True, capture_stderr=True)
-    )
-    samples = np.frombuffer(out, np.float32)
-    if force_mono:
-        return samples.flatten()
-    usable = samples.size - samples.size % channels
-    return samples[:usable].reshape(-1, channels).T.copy()
+        audio = audio.mean(axis=0, keepdims=True) if audio.shape[0] > 1 else audio[:1]
+    if sr and source_sr and source_sr != sr:
+        import librosa
+
+        audio = librosa.resample(audio, orig_sr=source_sr, target_sr=sr, axis=-1)
+    return audio[0].astype(np.float32, copy=False) if force_mono else audio
 
 
 def _channel_first_tensor(audio):
@@ -285,26 +305,26 @@ def load_audio_tensor(file, sr, force_mono=True):
     """Load audio as a tensor; stereo mode returns channel-first data."""
     file = clean_path(file)
     if not _USE_TORCHAUDIO_GPU:
-        return _TORCH.from_numpy(_load_audio_ffmpeg(file, sr, force_mono))
+        return _TORCH.from_numpy(_load_audio_av(file, sr, force_mono))
     try:
         return _load_audio_torchaudio_gpu(
             file, sr, force_mono=force_mono, keep_on_device=True
         )
     except Exception as torchaudio_error:
         try:
-            audio, source_sr = _decode_audio_ffmpeg(file)
+            audio, source_sr = _decode_audio_av(file)
             return _resample_tensor_gpu(
                 audio, source_sr, sr, force_mono=force_mono, keep_on_device=True
             )
-        except Exception as ffmpeg_error:
+        except Exception as av_error:
             try:
-                audio = _TORCH.from_numpy(_load_audio_ffmpeg(file, sr, force_mono))
+                audio = _TORCH.from_numpy(_load_audio_av(file, sr, force_mono))
                 return audio.to(device=_AUDIO_DEVICE, dtype=_AUDIO_DTYPE)
             except Exception:
                 raise RuntimeError(
-                    "Failed to load audio with torchaudio (%s) and FFmpeg (%s)"
-                    % (torchaudio_error, ffmpeg_error)
-                ) from ffmpeg_error
+                    "Failed to load audio with torchaudio (%s) and PyAV (%s)"
+                    % (torchaudio_error, av_error)
+                ) from av_error
 
 
 def load_audio(file, sr, force_mono=True):
@@ -315,7 +335,7 @@ def load_audio(file, sr, force_mono=True):
             return _load_audio_torchaudio_gpu(file, sr, force_mono=force_mono)
         except Exception as torchaudio_error:
             try:
-                audio, source_sr = _decode_audio_ffmpeg(file)
+                audio, source_sr = _decode_audio_av(file)
                 return _resample_tensor_gpu(
                     audio, source_sr, sr, force_mono=force_mono
                 )
@@ -323,14 +343,14 @@ def load_audio(file, sr, force_mono=True):
                 # Preserve the old format coverage if both torchaudio decode
                 # and GPU processing are unavailable for this file.
                 try:
-                    return _load_audio_ffmpeg(file, sr, force_mono)
-                except Exception as ffmpeg_error:
+                    return _load_audio_av(file, sr, force_mono)
+                except Exception as av_error:
                     raise RuntimeError(
-                        "Failed to load audio with torchaudio (%s), raw FFmpeg (%s), and FFmpeg (%s)"
-                        % (torchaudio_error, decode_error, ffmpeg_error)
-                    ) from ffmpeg_error
+                        "Failed to load audio with torchaudio (%s), PyAV decode (%s), and PyAV resample (%s)"
+                        % (torchaudio_error, decode_error, av_error)
+                    ) from av_error
     try:
-        return _load_audio_ffmpeg(file, sr, force_mono)
+        return _load_audio_av(file, sr, force_mono)
     except Exception as error:
         raise RuntimeError("Failed to load audio: %s" % error) from error
 

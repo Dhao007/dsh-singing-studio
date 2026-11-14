@@ -5,11 +5,109 @@ import { dirname, join } from 'node:path'
 
 import { BIN_DIR, IS_WIN, ensureDir, venvBin, venvPython } from './store.js'
 
+const HF_MIRROR = 'https://hf-mirror.com'
+const HF_ORIGIN = 'https://huggingface.co'
 const HF = {
-  rvc: 'https://huggingface.co/lj1995/VoiceConversionWebUI/resolve/main',
-  rvcMirror: 'https://hf-mirror.com/lj1995/VoiceConversionWebUI/resolve/main',
-  soulx: 'https://huggingface.co/Soul-AILab/SoulX-Singer/resolve/main',
-  soulxMirror: 'https://hf-mirror.com/Soul-AILab/SoulX-Singer/resolve/main',
+  rvc: 'lj1995/VoiceConversionWebUI',
+  soulx: 'Soul-AILab/SoulX-Singer',
+  separator: 'Politrees/UVR_resources',
+}
+
+/**
+ * 镜像优先：国内直连 huggingface.co 经常超时，先试 hf-mirror.com，失败再回退官方站。
+ * 安装器和「手动下载」清单共用这一份顺序。
+ */
+function hfUrls(repo, path) {
+  return [
+    `${HF_MIRROR}/${repo}/resolve/main/${path}`,
+    `${HF_ORIGIN}/${repo}/resolve/main/${path}`,
+  ]
+}
+
+/** transformers / huggingface_hub 只认 HF_ENDPOINT：默认镜像，用户显式设过就尊重用户。 */
+function hfEndpointEnv() {
+  return { HF_ENDPOINT: process.env.HF_ENDPOINT || HF_MIRROR }
+}
+
+const PYPI_MIRROR = 'https://pypi.tuna.tsinghua.edu.cn/simple'
+const PYPI_ORIGIN = 'https://pypi.org/simple'
+const TORCH_CUDA_INDEX = 'https://download.pytorch.org/whl/cu121'
+
+/** 清华 PyPI 镜像优先；启动前设了 PIP_INDEX_URL 就用用户的源。 */
+function pipMirror() {
+  return process.env.PIP_INDEX_URL || PYPI_MIRROR
+}
+
+/**
+ * uv 可用就用 uv：settings.uvPath 指定的优先，否则看 PATH。
+ * 显式配置了但不可执行时不回落到 PATH，直接当没有 uv（免得装了不该用的版本）。
+ */
+function uvCommand(settings) {
+  const explicit = String(settings?.uvPath || '').trim()
+  if (explicit) return (existsSync(explicit) || commandExists(explicit)) ? explicit : ''
+  if (commandExists('uv')) return 'uv'
+  // 从 Finder / 桌面启动 DSH 时 PATH 可能只有 /usr/bin:/bin，去常见安装位置再找一次。
+  const candidates = [
+    join(homedir(), '.local', 'bin', IS_WIN ? 'uv.exe' : 'uv'),
+    '/opt/homebrew/bin/uv',
+    '/usr/local/bin/uv',
+  ]
+  if (IS_WIN) {
+    candidates.push(join(homedir(), 'AppData', 'Local', 'Microsoft', 'WinGet', 'Links', 'uv.exe'))
+  }
+  return candidates.find((item) => existsSync(item)) || ''
+}
+
+const skipPyCache = (src) => !/[\\/]__pycache__([\\/]|$)/.test(src) && !src.endsWith('.pyc')
+
+/** 把插件内置代码覆盖到 managed runtime；训练开始前也会调用一次，保证用上最新代码。 */
+export function syncVendorCode(settings, pluginRoot) {
+  if (settings.mode !== 'managed') return
+  cpSync(join(pluginRoot, 'vendor', 'rvc'), settings.rvcDir, { recursive: true, force: true, filter: skipPyCache })
+  cpSync(join(pluginRoot, 'vendor', 'soulx'), settings.soulxDir, { recursive: true, force: true, filter: skipPyCache })
+}
+
+/**
+ * 装包统一入口：uv 优先（可用时），否则 pip；两者都是清华镜像 → PyPI 官方。
+ * 指定 index 时只用该索引（给 CUDA 轮子用），先 uv 后 pip。
+ */
+async function installPackages(py, args, { settings, timeoutMs = 60 * 60_000, index = '' } = {}) {
+  const uv = uvCommand(settings)
+  const baseEnv = proxyEnv(settings)
+  const attempts = []
+  const add = (tool, indexUrl, env = {}) => attempts.push({ tool, indexUrl, env })
+  if (index) {
+    if (uv) add('uv', index)
+    add('pip', index)
+  } else {
+    if (uv) {
+      add('uv', pipMirror())
+      add('uv', '', { UV_INDEX_URL: PYPI_ORIGIN })
+    }
+    add('pip', pipMirror())
+    add('pip', '', { PIP_INDEX_URL: PYPI_ORIGIN })
+  }
+
+  let lastError = null
+  for (const attempt of attempts) {
+    const env = { ...baseEnv, ...attempt.env }
+    try {
+      if (attempt.tool === 'uv') {
+        const uvArgs = ['pip', 'install', '--python', py, '--no-cache', ...args]
+        if (attempt.indexUrl) uvArgs.push('--index-url', attempt.indexUrl)
+        await run(uv, uvArgs, { timeoutMs, env })
+      } else {
+        const pipArgs = ['-m', 'pip', 'install', '--no-cache-dir', '--disable-pip-version-check', ...args]
+        if (attempt.indexUrl) pipArgs.push('--index-url', attempt.indexUrl)
+        await run(py, pipArgs, { timeoutMs, env })
+      }
+      return attempt.tool
+    } catch (error) {
+      lastError = error
+    }
+  }
+  const tried = [...new Set(attempts.map((item) => item.tool))].join(' / ')
+  throw new Error(`安装失败（已尝试 ${tried} 和清华 / 官方源）：${lastError?.message || '未知错误'}`)
 }
 
 const SEP_MODEL = 'model_bs_roformer_ep_317_sdr_12.9755'
@@ -17,8 +115,9 @@ const SEP_CKPT_SHA = '5b84f37e8d444c8cb30c79d77f613a41c05868ff9c9ac6c7049c00aefa
 const SEP_YAML_SHA = '2bfdd16c656bd9519aba757cc4f8834b7ede675eb1e00ec4772d74ae1c41af7f'
 
 const REQUIRED_MODULES_RVC = ['torch', 'torchaudio', 'librosa', 'soundfile', 'numpy', 'scipy', 'faiss', 'transformers', 'av', 'parselmouth', 'yaml']
-const REQUIRED_MODULES_TRAIN = ['tensorboard', 'sklearn']
+const REQUIRED_MODULES_TRAIN = ['tensorboard', 'sklearn', 'matplotlib']
 const REQUIRED_MODULES_SOULX = ['torch', 'torchaudio', 'transformers', 'librosa', 'soundfile', 'numpy', 'scipy', 'omegaconf', 'accelerate']
+const REQUIRED_MODULES_SEPARATOR = ['onnxruntime']
 
 let cache = { at: 0, key: '', value: null }
 
@@ -166,8 +265,8 @@ export function checkDependencies(settings, { refresh = false } = {}) {
   push('rvc-train', 'RVC 训练代码', trainCode, trainCode ? join(settings.rvcDir, 'train') : '缺少 train/train.py（环境准备会自动复制）', { action: 'rvc-train', required: false })
 
   const trainMods = rvcPythonOk ? pythonModules(settings.pythonPath, REQUIRED_MODULES_TRAIN) : { ok: false, missing: REQUIRED_MODULES_TRAIN }
-  push('rvc-train-deps', 'RVC 训练依赖（TensorBoard / scikit-learn）', trainMods.ok,
-    trainMods.ok ? '训练依赖已安装' : `缺少：${(trainMods.missing || []).join(', ') || 'tensorboard, scikit-learn'}`, { action: 'rvc-train-deps', required: false })
+  push('rvc-train-deps', 'RVC 训练依赖（TensorBoard / scikit-learn / matplotlib）', trainMods.ok,
+    trainMods.ok ? '训练依赖已安装' : `缺少：${(trainMods.missing || []).join(', ') || 'tensorboard, scikit-learn, matplotlib'}`, { action: 'rvc-train-deps', required: false })
 
   const pretrainG = join(settings.rvcDir, 'assets', 'pretrained_v2', 'f0G48k.pth')
   const pretrainD = join(settings.rvcDir, 'assets', 'pretrained_v2', 'f0D48k.pth')
@@ -184,7 +283,17 @@ export function checkDependencies(settings, { refresh = false } = {}) {
   const sepExeOk = settings.separatorExe && existsSync(settings.separatorExe)
   const sepCkpt = settings.separatorModelDir && existsSync(join(settings.separatorModelDir, `${SEP_MODEL}.ckpt`))
   const sepYaml = settings.separatorModelDir && existsSync(join(settings.separatorModelDir, `${SEP_MODEL}.yaml`))
-  push('separator', '人声分离环境', sepExeOk && sepCkpt && sepYaml, sepExeOk && sepCkpt && sepYaml ? settings.separatorModelDir : !sepExeOk ? '缺少 audio-separator' : '缺少分离模型', { action: 'separator' })
+  // audio-separator 0.48+ 在导入时就要求 onnxruntime；旧版安装可能没有装它。
+  const sepPython = settings.separatorExe
+    ? join(dirname(settings.separatorExe), IS_WIN ? 'python.exe' : 'python')
+    : venvPython(join(settings.runtimeRoot || '', 'venv-separator'))
+  const sepMods = sepExeOk && existsSync(sepPython)
+    ? pythonModules(sepPython, REQUIRED_MODULES_SEPARATOR)
+    : { ok: false, missing: REQUIRED_MODULES_SEPARATOR }
+  const sepOk = sepExeOk && sepCkpt && sepYaml && sepMods.ok
+  push('separator', '人声分离环境', sepOk,
+    sepOk ? settings.separatorModelDir : !sepExeOk ? '缺少 audio-separator' : !sepCkpt || !sepYaml ? '缺少分离模型' : `缺少：${(sepMods.missing || []).join(', ')}（点「一键安装」补装）`,
+    { action: 'separator' })
 
   const soulxPythonOk = settings.soulxPython && existsSync(settings.soulxPython)
   const soulxMods = soulxPythonOk ? pythonModules(settings.soulxPython, REQUIRED_MODULES_SOULX) : { ok: false, missing: REQUIRED_MODULES_SOULX }
@@ -220,23 +329,22 @@ export function downloadManifest(settings) {
     entries.push({ id, category, label, target, urls, size, present, partial })
   }
   add('rmvpe', 'RVC', 'RMVPE 音高模型', join(settings.rvcDir, 'assets', 'rmvpe', 'rmvpe.pt'),
-    [`${HF.rvc}/rmvpe.pt`, `${HF.rvcMirror}/rmvpe.pt`], 181184272)
+    hfUrls(HF.rvc, 'rmvpe.pt'), 181184272)
   for (const name of ['config.json', 'preprocessor_config.json', 'pytorch_model.bin']) {
     add(`hubert-${name}`, 'RVC', `HuBERT ${name}`, join(settings.rvcDir, 'assets', 'hubert_base', name),
-      [`${HF.rvc}/hubert_base/${name}`, `${HF.rvcMirror}/hubert_base/${name}`])
+      hfUrls(HF.rvc, `hubert_base/${name}`))
   }
   add('pretrain-G', 'RVC 训练', 'f0G48k.pth（生成器底模）', join(settings.rvcDir, 'assets', 'pretrained_v2', 'f0G48k.pth'),
-    [`${HF.rvc}/pretrained_v2/f0G48k.pth`, `${HF.rvcMirror}/pretrained_v2/f0G48k.pth`], 75465569)
+    hfUrls(HF.rvc, 'pretrained_v2/f0G48k.pth'), 75465569)
   add('pretrain-D', 'RVC 训练', 'f0D48k.pth（判别器底模）', join(settings.rvcDir, 'assets', 'pretrained_v2', 'f0D48k.pth'),
-    [`${HF.rvc}/pretrained_v2/f0D48k.pth`, `${HF.rvcMirror}/pretrained_v2/f0D48k.pth`], 142875703)
+    hfUrls(HF.rvc, 'pretrained_v2/f0D48k.pth'), 142875703)
   if (settings.soulxModel) {
     add('soulx-model', 'SoulX', 'model-svc.pt（SoulX 模型）', settings.soulxModel,
-      [`${HF.soulx}/model-svc.pt`, `${HF.soulxMirror}/model-svc.pt`], 2793965154)
+      hfUrls(HF.soulx, 'model-svc.pt'), 2793965154)
   }
   if (settings.separatorModelDir) {
     add('sep-ckpt', '人声分离', `${SEP_MODEL}.ckpt`, join(settings.separatorModelDir, `${SEP_MODEL}.ckpt`), [
-      `https://hf-mirror.com/Politrees/UVR_resources/resolve/main/models/Roformer/BandSplit/${SEP_MODEL}.ckpt`,
-      `https://huggingface.co/Politrees/UVR_resources/resolve/main/models/Roformer/BandSplit/${SEP_MODEL}.ckpt`,
+      ...hfUrls(HF.separator, `models/Roformer/BandSplit/${SEP_MODEL}.ckpt`),
       `https://github.com/nomadkaraoke/python-audio-separator/releases/download/model-configs/${SEP_MODEL}.ckpt`,
     ], 0)
     add('sep-yaml', '人声分离', `${SEP_MODEL}.yaml`, join(settings.separatorModelDir, `${SEP_MODEL}.yaml`), [
@@ -278,13 +386,23 @@ async function download(boot, urls, out, { size = 0, sha = '', report, job, prox
   return out
 }
 
-async function ensureVenv(boot, venvDir, report) {
+async function ensureVenv(boot, venvDir, report, settings) {
   const py = venvPython(venvDir)
   if (existsSync(py)) return py
   report?.('创建环境', 0.01, venvDir)
+  const uv = uvCommand(settings)
+  if (uv) {
+    try {
+      const probe = runSync(boot.cmd, [...boot.args, '-c', 'import sys;print(sys.executable)'], 10000)
+      const pythonExe = String(probe.stdout || '').trim() || boot.cmd
+      // --seed 让 venv 里带一份 pip，后面 uv 万一失败还能退回 pip。
+      await run(uv, ['venv', '--seed', '--python', pythonExe, venvDir], { timeoutMs: 10 * 60_000, env: proxyEnv(settings) })
+    } catch { /* uv 建环境失败就退回标准库 venv */ }
+    if (existsSync(py)) return py
+  }
   await run(boot.cmd, [...boot.args, '-m', 'venv', venvDir], { timeoutMs: 10 * 60_000 })
   if (!existsSync(py)) throw new Error(`venv 创建失败：${venvDir}`)
-  await run(py, ['-m', 'pip', 'install', '--upgrade', 'pip'], { timeoutMs: 10 * 60_000 })
+  await installPackages(py, ['--upgrade', 'pip'], { settings, timeoutMs: 10 * 60_000 })
   return py
 }
 
@@ -294,24 +412,24 @@ function hasNvidia() {
 
 async function installTorch(py, { version, report, settings }) {
   const cuda = hasNvidia()
-  const base = ['-m', 'pip', 'install', '--no-cache-dir', `torch==${version}`, `torchaudio==${version}`]
   if (cuda) {
     report?.('安装 PyTorch', 0.05, `检测到 NVIDIA，尝试 CUDA 轮子（${version}）`)
     try {
-      await run(py, [...base, '--index-url', 'https://download.pytorch.org/whl/cu121'], { timeoutMs: 60 * 60_000, env: proxyEnv(settings) })
+      // 清华只镜像 conda 的 pytorch 频道，没有 pip 版 CUDA 轮子；这里只能走官方索引。
+      await installPackages(py, [`torch==${version}`, `torchaudio==${version}`], { settings, index: TORCH_CUDA_INDEX, timeoutMs: 60 * 60_000 })
       return 'cuda'
     } catch {
       report?.('安装 PyTorch', 0.08, 'CUDA 轮子失败，回退 CPU')
     }
   }
-  report?.('安装 PyTorch', 0.05, `安装 CPU 轮子（${version}）`)
-  await run(py, base, { timeoutMs: 60 * 60_000, env: proxyEnv(settings) })
+  report?.('安装 PyTorch', 0.05, `安装 CPU 轮子（${version}，清华镜像优先）`)
+  await installPackages(py, [`torch==${version}`, `torchaudio==${version}`], { settings })
   return 'cpu'
 }
 
 async function pipReq(py, reqFile, report, settings) {
   report?.('安装依赖', 0.1, reqFile.split(/[\\/]/).pop())
-  await run(py, ['-m', 'pip', 'install', '--no-cache-dir', '-r', reqFile], { timeoutMs: 60 * 60_000, env: proxyEnv(settings) })
+  await installPackages(py, ['-r', reqFile], { settings })
 }
 
 export async function setupAll(settings, pluginRoot, { report, job } = {}) {
@@ -320,14 +438,19 @@ export async function setupAll(settings, pluginRoot, { report, job } = {}) {
   if (!bootPython) throw new Error('未找到 Python 3.10+，请先安装 Python 或设置 systemPython')
   const boot = { ...bootPython, python: bootPython.cmd, args: bootPython.args, pluginRoot }
   const patch = {}
-  rep('检测环境', 0.01, `${boot.cmd} ${boot.version}`)
+  rep('检测环境', 0.01, `${boot.cmd} ${boot.version} · ${uvCommand(settings) ? 'uv' : 'pip'}`)
 
   const managed = settings.mode === 'managed'
   const rvcDir = settings.rvcDir
   const soulxDir = settings.soulxDir
-  if (!existsSync(join(rvcDir, 'infer', 'vc', 'modules.py'))) {
+  // managed 模式的代码由插件托管：每次准备环境都同步一遍，避免「目录已存在」让
+  // 修好的推理 / 训练代码一直留在旧副本里（existing 模式只在缺代码时补一份）。
+  if (managed) {
+    rep('安装 RVC 代码', 0.02, '同步插件内置代码')
+    syncVendorCode(settings, pluginRoot)
+  } else if (!existsSync(join(rvcDir, 'infer', 'vc', 'modules.py'))) {
     rep('安装 RVC 代码', 0.02, '从插件 vendor 复制')
-    cpSync(join(pluginRoot, 'vendor', 'rvc'), rvcDir, { recursive: true })
+    cpSync(join(pluginRoot, 'vendor', 'rvc'), rvcDir, { recursive: true, force: true, filter: skipPyCache })
   }
   // 训练代码单独补齐：老的 managed 安装里只有推理代码。
   if (!existsSync(join(rvcDir, 'train', 'train.py'))) {
@@ -339,15 +462,15 @@ export async function setupAll(settings, pluginRoot, { report, job } = {}) {
     ensureDir(join(rvcDir, 'tools'))
     cpSync(join(pluginRoot, 'vendor', 'rvc', 'tools', 'multispeaker.py'), join(rvcDir, 'tools', 'multispeaker.py'))
   }
-  if (!existsSync(join(soulxDir, 'soulxsinger', 'models', 'soulxsinger_svc.py'))) {
+  if (!managed && !existsSync(join(soulxDir, 'soulxsinger', 'models', 'soulxsinger_svc.py'))) {
     rep('安装 SoulX 代码', 0.03, '从插件 vendor 复制')
-    cpSync(join(pluginRoot, 'vendor', 'soulx'), soulxDir, { recursive: true })
+    cpSync(join(pluginRoot, 'vendor', 'soulx'), soulxDir, { recursive: true, force: true, filter: skipPyCache })
   }
 
   const rvcVenv = settings.pythonPath ? join(settings.pythonPath, '..', '..') : join(settings.runtimeRoot, 'venv-rvc')
   const soulxVenv = settings.soulxPython ? join(settings.soulxPython, '..', '..') : join(settings.runtimeRoot, 'venv-soulx')
-  const rvcPython = await ensureVenv(boot, rvcVenv, rep)
-  const soulxPython = await ensureVenv(boot, soulxVenv, rep)
+  const rvcPython = await ensureVenv(boot, rvcVenv, rep, settings)
+  const soulxPython = await ensureVenv(boot, soulxVenv, rep, settings)
   const rvcMods = pythonModules(rvcPython, REQUIRED_MODULES_RVC)
   if (!rvcMods.ok) {
     rep('安装 PyTorch', 0.05, 'RVC')
@@ -359,7 +482,7 @@ export async function setupAll(settings, pluginRoot, { report, job } = {}) {
   const trainMods = pythonModules(rvcPython, REQUIRED_MODULES_TRAIN)
   if (!trainMods.ok) {
     rep('安装训练依赖', 0.07, `tensorboard / scikit-learn（缺少 ${(trainMods.missing || []).join(', ')}）`)
-    await run(rvcPython, ['-m', 'pip', 'install', '--no-cache-dir', 'tensorboard>=2.9', 'scikit-learn>=1.0'], { timeoutMs: 30 * 60_000, env: proxyEnv(settings) })
+    await installPackages(rvcPython, ['tensorboard>=2.9', 'scikit-learn>=1.0', 'matplotlib>=3.7'], { settings, timeoutMs: 30 * 60_000 })
   }
   const soulxMods = pythonModules(soulxPython, REQUIRED_MODULES_SOULX)
   if (!soulxMods.ok) {
@@ -371,47 +494,64 @@ export async function setupAll(settings, pluginRoot, { report, job } = {}) {
   }
 
   rep('下载 RVC 资源', 0.15, 'RMVPE')
-  await download(boot, [`${HF.rvc}/rmvpe.pt`, `${HF.rvcMirror}/rmvpe.pt`], join(rvcDir, 'assets', 'rmvpe', 'rmvpe.pt'), { size: 181184272, report: rep, job, proxy: settings.proxy })
+  await download(boot, hfUrls(HF.rvc, 'rmvpe.pt'), join(rvcDir, 'assets', 'rmvpe', 'rmvpe.pt'), { size: 181184272, report: rep, job, proxy: settings.proxy })
   for (const name of ['config.json', 'preprocessor_config.json', 'pytorch_model.bin']) {
     rep('下载 RVC 资源', 0.2, name)
-    await download(boot, [`${HF.rvc}/hubert_base/${name}`, `${HF.rvcMirror}/hubert_base/${name}`], join(rvcDir, 'assets', 'hubert_base', name), { report: rep, job, proxy: settings.proxy })
+    await download(boot, hfUrls(HF.rvc, `hubert_base/${name}`), join(rvcDir, 'assets', 'hubert_base', name), { report: rep, job, proxy: settings.proxy })
+  }
+  // transformers 4.56+ 在 torch<2.6 时拒绝加载 .bin（CVE-2025-32434），safetensors 不受限制。
+  // 转一份 model.safetensors，from_pretrained 会自动优先用它，不用动 torch 版本。
+  const hubertBin = join(rvcDir, 'assets', 'hubert_base', 'pytorch_model.bin')
+  const hubertSafe = join(rvcDir, 'assets', 'hubert_base', 'model.safetensors')
+  if (existsSync(hubertBin)) {
+    let needConvert = !existsSync(hubertSafe)
+    try { needConvert = needConvert || statSync(hubertSafe).mtimeMs < statSync(hubertBin).mtimeMs } catch {}
+    if (needConvert) {
+      rep('转换 HuBERT 权重', 0.22, 'pytorch_model.bin → model.safetensors')
+      await run(rvcPython, [join(pluginRoot, 'engine', 'convert_hubert_safetensors.py'), '--bin', hubertBin, '--out', hubertSafe], {
+        job, timeoutMs: 10 * 60_000,
+      })
+    }
   }
 
   // RVC 训练底模（48k + f0）：只在做训练时才用得到，做成可选依赖。
   for (const [name, size] of [['f0G48k.pth', 75465569], ['f0D48k.pth', 142875703]]) {
     rep('下载 RVC 训练底模', 0.24, name)
-    await download(boot, [`${HF.rvc}/pretrained_v2/${name}`, `${HF.rvcMirror}/pretrained_v2/${name}`],
+    await download(boot, hfUrls(HF.rvc, `pretrained_v2/${name}`),
       join(rvcDir, 'assets', 'pretrained_v2', name), { size, report: rep, job, proxy: settings.proxy })
   }
 
   rep('下载 SoulX 模型', 0.3, 'model-svc.pt（约 2.6 GB）')
-  await download(boot, [`${HF.soulx}/model-svc.pt`, `${HF.soulxMirror}/model-svc.pt`], settings.soulxModel, { size: 2793965154, report: rep, job, proxy: settings.proxy })
+  await download(boot, hfUrls(HF.soulx, 'model-svc.pt'), settings.soulxModel, { size: 2793965154, report: rep, job, proxy: settings.proxy })
 
   const existingSep = settings.separatorExe && existsSync(settings.separatorExe)
     && settings.separatorModelDir && existsSync(join(settings.separatorModelDir, `${SEP_MODEL}.ckpt`))
     && existsSync(join(settings.separatorModelDir, `${SEP_MODEL}.yaml`))
+  const sepVenv = join(settings.runtimeRoot, 'venv-separator')
+  const sepPy = await ensureVenv(boot, sepVenv, rep, settings)
+  const sepMods = pythonModules(sepPy, REQUIRED_MODULES_SEPARATOR)
   if (!existingSep) {
     rep('下载分离模型', 0.55, `${SEP_MODEL}.ckpt`)
     await download(boot, [
-      `https://hf-mirror.com/Politrees/UVR_resources/resolve/main/models/Roformer/BandSplit/${SEP_MODEL}.ckpt`,
-      `https://huggingface.co/Politrees/UVR_resources/resolve/main/models/Roformer/BandSplit/${SEP_MODEL}.ckpt`,
+      ...hfUrls(HF.separator, `models/Roformer/BandSplit/${SEP_MODEL}.ckpt`),
       `https://github.com/nomadkaraoke/python-audio-separator/releases/download/model-configs/${SEP_MODEL}.ckpt`,
     ], join(settings.separatorModelDir, `${SEP_MODEL}.ckpt`), { size: 0, sha: SEP_CKPT_SHA, report: rep, job, proxy: settings.proxy })
     await download(boot, [`https://github.com/nomadkaraoke/python-audio-separator/releases/download/model-configs/${SEP_MODEL}.yaml`], join(settings.separatorModelDir, `${SEP_MODEL}.yaml`), { sha: SEP_YAML_SHA, report: rep, job, proxy: settings.proxy })
 
     rep('安装分离器', 0.65, 'audio-separator')
-    const sepVenv = join(settings.runtimeRoot, 'venv-separator')
-    const sepPy = await ensureVenv(boot, sepVenv, rep)
-    await run(sepPy, ['-m', 'pip', 'install', '--no-cache-dir', 'audio-separator'], { timeoutMs: 60 * 60_000, env: proxyEnv(settings) })
+    await installPackages(sepPy, ['audio-separator', 'onnxruntime>=1.17'], { settings })
     patch.separatorExe = venvBin(sepVenv, 'audio-separator')
     patch.separatorModelDir = settings.separatorModelDir
+  } else if (!sepMods.ok) {
+    rep('修复分离器依赖', 0.65, `安装 ${(sepMods.missing || ['onnxruntime']).join(', ')}`)
+    await installPackages(sepPy, ['onnxruntime>=1.17'], { settings })
   }
 
   const ffOk = settings.ffmpeg && (settings.ffmpeg.includes('/') || settings.ffmpeg.includes('\\')
     ? existsSync(settings.ffmpeg) : commandExists(settings.ffmpeg))
   if (!ffOk) {
     rep('准备 ffmpeg', 0.78, 'imageio-ffmpeg')
-    await run(rvcPython, ['-m', 'pip', 'install', '--no-cache-dir', 'imageio-ffmpeg'], { timeoutMs: 10 * 60_000, env: proxyEnv(settings) })
+    await installPackages(rvcPython, ['imageio-ffmpeg'], { settings, timeoutMs: 10 * 60_000 })
     const ff = await run(rvcPython, ['-c', 'import imageio_ffmpeg;print(imageio_ffmpeg.get_ffmpeg_exe())'], { timeoutMs: 30_000 })
     patch.ffmpeg = String(ff.stdout || '').trim()
   }
@@ -419,7 +559,7 @@ export async function setupAll(settings, pluginRoot, { report, job } = {}) {
   const whisperDir = process.env.HF_HOME || join(homedir(), '.cache', 'huggingface', 'hub')
   if (!existsSync(join(whisperDir, 'models--openai--whisper-base'))) {
     rep('准备 Whisper', 0.85, 'openai/whisper-base')
-    await run(soulxPython, ['-c', 'from transformers import WhisperFeatureExtractor,WhisperModel; WhisperFeatureExtractor.from_pretrained("openai/whisper-base"); WhisperModel.from_pretrained("openai/whisper-base")'], { timeoutMs: 30 * 60_000, env: proxyEnv(settings) })
+    await run(soulxPython, ['-c', 'from transformers import WhisperFeatureExtractor,WhisperModel; WhisperFeatureExtractor.from_pretrained("openai/whisper-base"); WhisperModel.from_pretrained("openai/whisper-base")'], { timeoutMs: 30 * 60_000, env: { ...proxyEnv(settings), ...hfEndpointEnv() } })
   }
 
   rep('完成', 1, '环境已准备')

@@ -14,6 +14,7 @@ window.__ModuleLoader__.load({
     // 所以工作区快照单独存一份，切回来再按 id 从 Host 取回分析/成品。
     const WORKSPACE_KEY = 'singing-studio.workspace.v1'
     const NOTES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
+    const COVERS_PER_PAGE = 6
 
     const get = (p) => fetch(API + p, { cache: 'no-store' }).then((r) => r.json()).catch((e) => ({ ok: false, message: '连不上插件：' + e.message }))
     const post = (p, body) => fetch(API + p, {
@@ -98,7 +99,6 @@ window.__ModuleLoader__.load({
     const statusTone = (status) => (status === 'done' ? 'good' : status === 'error' || status === 'cancelled' ? 'warn' : '')
 
     const ICON = {
-      overview: 'M3.5 10.5 12 3l8.5 7.5M5.5 9.3V21h13V9.3M9.5 21v-6h5v6',
       studio: 'M12 3.2a3.1 3.1 0 0 1 3.1 3.1v5.4a3.1 3.1 0 0 1-6.2 0V6.3A3.1 3.1 0 0 1 12 3.2zM5.6 11.2a6.4 6.4 0 0 0 12.8 0M12 17.6V21M8.8 21h6.4',
       timeline: 'M3 12h2.4l1.8-6.5 3.4 13 2.6-8.5 1.9 4.4H21',
       plans: 'M12 3 3.5 7.6 12 12.2l8.5-4.6L12 3zM3.5 12 12 16.6 20.5 12M3.5 16.4 12 21l8.5-4.6',
@@ -107,25 +107,26 @@ window.__ModuleLoader__.load({
       train: 'M4 19V9M9 19V5M14 19v-7M19 19v-4M3 21h18',
       upload: 'M12 16V4M7.5 8.5 12 4l4.5 4.5M5 14v5h14v-5',
       spark: 'M12 3l1.8 4.7L18.5 9.5l-4.7 1.8L12 16l-1.8-4.7L5.5 9.5l4.7-1.8L12 3zM18.5 15.5l.8 2.2 2.2.8-2.2.8-.8 2.2-.8-2.2-2.2-.8 2.2-.8.8-2.2z',
-      play: 'M9 6.5v11l9-5.5-9-5.5z',
       speaker: 'M4 9.5h3.5L12 6v12l-4.5-3.5H4zM16 9a4.5 4.5 0 0 1 0 6M18.5 6.5a8 8 0 0 1 0 11',
-      check: 'M5 12.5 9.5 17 19 7.5',
       alert: 'M12 4 3.5 20h17L12 4zM12 9v5M12 17.2v.1',
       clock: 'M12 3.5a8.5 8.5 0 1 0 0 17 8.5 8.5 0 0 0 0-17zM12 7v5.5l3.5 2',
       info: 'M12 3.5a8.5 8.5 0 1 0 0 17 8.5 8.5 0 0 0 0-17zM12 10.5V17M12 7.2v.1',
       download: 'M12 4v11M7.5 10.5 12 15l4.5-4.5M5 19h14',
-      refresh: 'M20 12a8 8 0 1 1-2.3-5.6M20 4v5h-5',
-      arrow: 'M5 12h14M13 6l6 6-6 6',
       chevron: 'M6 9l6 6 6-6',
     }
 
     const PAGES = [
-      { id: 'env', label: '环境安装', icon: ICON.env, hint: '依赖与一键准备' },
-      { id: 'train', label: 'RVC训练', icon: ICON.train, hint: '训练音色模型' },
-      { id: 'studio', label: '制作台', icon: ICON.studio, hint: '歌曲、翻唱与队列' },
-      { id: 'settings', label: '设置', icon: ICON.settings, hint: '通用设置' },
+      { id: 'env', label: '环境安装', icon: ICON.env, tip: '依赖检查、一键安装与手动下载' },
+      { id: 'train', label: 'RVC训练', icon: ICON.train, tip: '用唱歌数据训练音色模型' },
+      { id: 'studio', label: '制作台', icon: ICON.studio, tip: '歌曲库、音高时间轴、方案与队列' },
+      { id: 'settings', label: '设置', icon: ICON.settings, tip: '通用行为与上传限制' },
     ]
     const PAGE_IDS = new Set(PAGES.map((p) => p.id))
+    const TRAIN_MODES = [
+      { id: 'train', label: '训练新音色', icon: ICON.upload, tip: '用唱歌数据训练新的 RVC 音色，并生成音域 Profile' },
+      { id: 'import', label: '导入已有模型', icon: ICON.download, tip: '复用已有 .pth，按训练数据生成音域 Profile' },
+      { id: 'soulx', label: 'SoulX 音色', icon: ICON.spark, tip: '用参考音频创建零样本音色，不训练模型' },
+    ]
     // 老版本的页 id 迁移到新的四页布局；时间轴 / 方案迁到制作台内部视图。
     const readSavedPage = () => {
       try {
@@ -135,7 +136,7 @@ window.__ModuleLoader__.load({
         if (PAGE_IDS.has(page)) {
           return {
             page,
-            view: saved === 'timeline' ? 'timeline' : saved === 'plans' ? 'plans' : '',
+            view: saved === 'timeline' || saved === 'plans' ? 'timeline' : '',
           }
         }
       } catch {}
@@ -151,6 +152,7 @@ window.__ModuleLoader__.load({
       epochs: 20,
       batchSize: 4,
       saveEvery: 5,
+      auditionEvery: 0,
       per: 3.7,
       f0Method: 'rmvpe',
       nP: 2,
@@ -162,70 +164,61 @@ window.__ModuleLoader__.load({
 
     const SETTING_GROUPS = [
       {
-        id: 'soulx',
-        page: 'studio',
-        title: 'SoulX-SVC 零样本参数',
-        desc: 'SoulX 的设备与推理参数。',
-        items: [
-          { key: 'soulxPromptWav', label: '默认参考音频', wide: true },
-          { key: 'soulxDevice', label: '设备', select: [['auto', 'auto · 自动'], ['mps', 'mps · Apple GPU'], ['cuda', 'cuda · NVIDIA'], ['cpu', 'cpu · 仅 CPU']] },
-          { key: 'soulxSteps', label: 'SoulX 步数', type: 'number', step: '1' },
-          { key: 'soulxCfg', label: 'SoulX CFG', type: 'number', step: '0.1' },
-          { key: 'soulxPromptSeconds', label: '参考音频截取（秒）', type: 'number', step: '1' },
-        ],
-      },
-      {
         id: 'netease',
         page: 'studio',
         title: '网易云下载',
-        desc: '免费歌不用登录；会员 / 版权歌填 MUSIC_U。',
+        tip: '免费歌不用登录；会员 / 版权歌需要 MUSIC_U。',
         items: [
-          { key: 'neteaseCookie', label: 'Cookie（MUSIC_U，可选）', type: 'password', wide: true, placeholder: '没填就留空；已保存的不会显示' },
+          { key: 'neteaseCookie', label: 'MUSIC_U Cookie', type: 'password', wide: true, placeholder: '可选；已保存的不显示', tip: '从网易云网页登录后复制 MUSIC_U；只保存在本机。' },
         ],
       },
       {
         id: 'plan',
-        page: 'studio',
+        page: 'timeline',
         title: '八度规划与混音',
-        desc: '覆盖率和变调参数。',
+        tip: '覆盖率目标、候选范围与变调混音。',
         items: [
-          { key: 'targetCoverage', label: '目标覆盖率（0–1）', type: 'number', step: '0.01' },
-          { key: 'maxOctaves', label: '候选八度上限（±N）', type: 'number', step: '1' },
-          { key: 'protect', label: 'protect（0–0.5）', type: 'number', step: '0.01' },
-          { key: 'rmsMixRate', label: 'rms mix rate', type: 'number', step: '0.01' },
-          { key: 'crossfadeMs', label: '交叉淡化（ms）', type: 'number', step: '10' },
-          { key: 'fillGap', label: '短停顿并入上一段（秒）', type: 'number', step: '0.1' },
+          { key: 'targetCoverage', label: '目标覆盖率（0–1）', type: 'number', step: '0.01', tip: '舒适区覆盖率目标；默认 0.95。' },
+          { key: 'maxOctaves', label: '候选八度上限（±N）', type: 'number', step: '1', tip: '最多向上下各移几个八度；默认 2。' },
+          { key: 'protect', label: 'protect（0–0.5）', type: 'number', step: '0.01', tip: '保护清辅音和呼吸声；越高越保留原音细节。' },
+          { key: 'rmsMixRate', label: 'rms mix rate', type: 'number', step: '0.01', tip: '输出响度包络与原唱的混合比例（0–1）。' },
+          { key: 'crossfadeMs', label: '交叉淡化（ms）', type: 'number', step: '10', tip: '段落衔接的淡入淡出长度。' },
+          { key: 'fillGap', label: '短停顿并入上一段（秒）', type: 'number', step: '0.1', tip: '间隔小于该值时并入上一段，减少碎变调。' },
         ],
       },
       {
         id: 'analysis',
-        page: 'studio',
+        page: 'timeline',
         title: 'F0 分析与乐句',
-        desc: '影响分析时的乐句切分和覆盖率统计。',
+        tip: '影响乐句切分、静音判断和覆盖率统计。',
         items: [
-          { key: 'phraseGap', label: '乐句间隔（秒）', type: 'number', step: '0.05' },
-          { key: 'sectionGap', label: '段落间隔（秒）', type: 'number', step: '0.1' },
-          { key: 'minPhrase', label: '最短乐句（秒）', type: 'number', step: '0.1' },
-          { key: 'topDb', label: '静音阈值（dB）', type: 'number', step: '1' },
+          { key: 'phraseGap', label: '乐句间隔（秒）', type: 'number', step: '0.05', tip: '停顿超过该值就切出新乐句；默认 0.25。' },
+          { key: 'sectionGap', label: '段落间隔（秒）', type: 'number', step: '0.1', tip: '停顿超过该值就切出新段落；默认 1.2。' },
+          { key: 'minPhrase', label: '最短乐句（秒）', type: 'number', step: '0.1', tip: '短于该值的片段并入相邻乐句。' },
+          { key: 'topDb', label: '静音阈值（dB）', type: 'number', step: '1', tip: '低于该响度的帧不参与分析；默认 14。' },
         ],
       },
       {
-        id: 'download',
+        id: 'separator',
         page: 'settings',
-        title: '下载',
-        desc: '下载模型和依赖时使用的代理；默认留空直连。',
+        title: '人声分离',
+        tip: 'BS-Roformer 的分轨速度与质量。',
         items: [
-          { key: 'proxy', label: '下载代理（可选）', wide: true },
+          {
+            key: 'separatorOverlap', label: '分轨速度',
+            select: [[4, '标准 · 质量优先（推荐）'], [2, '快速 · 约快一倍'], [1, '极速 · 可能有接缝']],
+            tip: '重叠预测窗口数。4 是模型默认值；降到 2 或 1 会明显提速，但接缝处更容易出现瑕疵。只影响之后新做的分轨，已有分轨会继续复用。',
+          },
         ],
       },
       {
         id: 'general',
         page: 'settings',
-        title: '通用',
-        desc: '插件行为与上传限制。',
+        title: '行为与上传',
+        tip: '插件行为与上传限制。',
         items: [
-          { key: 'autoWarmup', label: '自动预加载 RVC', select: [[true, '开启'], [false, '关闭']] },
-          { key: 'maxUploadMB', label: '上传大小上限（MB）', type: 'number', step: '10' },
+          { key: 'autoWarmup', label: '自动预加载 RVC', select: [[true, '开启'], [false, '关闭']], tip: '选中音色时自动把 RVC 模型加载为常驻。' },
+          { key: 'maxUploadMB', label: '上传大小上限（MB）', type: 'number', step: '10', tip: '单首歌曲文件的最大体积；默认 200。' },
         ],
       },
     ]
@@ -234,21 +227,14 @@ window.__ModuleLoader__.load({
     .ss-page{height:100%;overflow:auto;background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary)}
     .ss-page button{font:inherit}
     .ss-inner{max-width:1280px;margin:0 auto;padding:24px 28px 56px}
-    .ss-hero{position:relative;overflow:hidden;display:flex;align-items:center;gap:18px;padding:22px 24px;border:1px solid var(--dsw-alias-border-l1);border-radius:20px;background:radial-gradient(120% 160% at 0 0,color-mix(in srgb,var(--dsw-alias-brand-primary) 14%,transparent),transparent 58%),radial-gradient(90% 140% at 100% 0,color-mix(in srgb,var(--dsw-alias-state-success-primary) 9%,transparent),transparent 55%),var(--dsw-alias-bg-layer-1);box-shadow:0 10px 30px rgba(0,0,0,.06)}
+    .ss-hero{position:relative;overflow:hidden;display:flex;align-items:center;gap:16px;padding:18px 22px;border:1px solid var(--dsw-alias-border-l1);border-radius:20px;background:radial-gradient(120% 160% at 0 0,color-mix(in srgb,var(--dsw-alias-brand-primary) 14%,transparent),transparent 58%),radial-gradient(90% 140% at 100% 0,color-mix(in srgb,var(--dsw-alias-state-success-primary) 9%,transparent),transparent 55%),var(--dsw-alias-bg-layer-1);box-shadow:0 10px 30px rgba(0,0,0,.06)}
     .ss-hero:after{content:"";position:absolute;right:-42px;bottom:-78px;width:240px;height:240px;border-radius:50%;background:radial-gradient(circle,color-mix(in srgb,var(--dsw-alias-brand-primary) 14%,transparent),transparent 70%);pointer-events:none}
-    .ss-hero-mark{width:58px;height:58px;border-radius:18px;display:grid;place-items:center;flex:none;color:var(--dsw-alias-bg-base);background:linear-gradient(145deg,var(--dsw-alias-brand-primary),color-mix(in srgb,var(--dsw-alias-brand-primary) 55%,var(--dsw-alias-state-success-primary)));box-shadow:0 10px 24px color-mix(in srgb,var(--dsw-alias-brand-primary) 30%,transparent);position:relative;z-index:1}
+    .ss-hero-mark{width:52px;height:52px;border-radius:16px;display:grid;place-items:center;flex:none;color:var(--dsw-alias-bg-base);background:linear-gradient(145deg,var(--dsw-alias-brand-primary),color-mix(in srgb,var(--dsw-alias-brand-primary) 55%,var(--dsw-alias-state-success-primary)));box-shadow:0 10px 24px color-mix(in srgb,var(--dsw-alias-brand-primary) 30%,transparent);position:relative;z-index:1}
     .ss-hero-mark svg circle{fill:var(--dsw-alias-brand-primary)}
     .ss-hero-body{flex:1;min-width:0;position:relative;z-index:1}
-    .ss-eyebrow{font-size:10px;font-weight:700;letter-spacing:.16em;text-transform:uppercase;color:var(--dsw-alias-label-secondary)}
-    .ss-title{font-size:25px;line-height:1.2;font-weight:750;letter-spacing:.2px;margin:4px 0 0}
+    .ss-title{display:flex;align-items:baseline;gap:8px;font-size:24px;line-height:1.2;font-weight:750;letter-spacing:.2px;margin:0}
     .ss-sub{color:var(--dsw-alias-label-secondary);font-size:12.5px;line-height:1.6;margin:6px 0 0;max-width:720px}
-    .ss-hero-tags{display:flex;gap:6px;flex-wrap:wrap;margin-top:11px}
-    .ss-chip{display:inline-flex;align-items:center;gap:6px;max-width:100%;padding:4px 9px;border-radius:999px;font-size:11px;color:var(--dsw-alias-label-secondary);border:1px solid var(--dsw-alias-border-l1);background:color-mix(in srgb,var(--dsw-alias-bg-layer-1) 76%,transparent)}
-    .ss-chip b{font-weight:600;color:var(--dsw-alias-label-primary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:220px}
-    .ss-chip .ss-mini-dot{width:6px;height:6px;border-radius:50%;background:var(--dsw-alias-state-idle-primary);flex:none}
-    .ss-chip .ss-mini-dot.ok{background:var(--dsw-alias-state-success-primary)}
-    .ss-hero-side{display:flex;flex-direction:column;align-items:flex-end;gap:8px;flex:none;position:relative;z-index:1}
-    .ss-version{font-size:10.5px;color:var(--dsw-alias-label-secondary);font-variant-numeric:tabular-nums}
+    .ss-version{font-size:10px;font-weight:500;color:var(--dsw-alias-label-secondary);font-variant-numeric:tabular-nums;letter-spacing:0}
     .ss-pills{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}
     .ss-pill{display:inline-flex;align-items:center;gap:5px;font-size:11px;padding:4px 9px;border-radius:999px;border:1px solid var(--dsw-alias-border-l1);color:var(--dsw-alias-label-secondary);background:var(--dsw-alias-bg-layer-1)}
     .ss-pill:before{content:"";width:6px;height:6px;border-radius:50%;background:var(--dsw-alias-state-idle-primary);flex:none}
@@ -258,16 +244,20 @@ window.__ModuleLoader__.load({
     .ss-pill.bad:before{background:var(--dsw-alias-state-error-primary)}
     .ss-nav{position:sticky;top:0;z-index:8;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin:var(--dsh-frame-top-clearance,24px) 0 16px;padding:8px;border-radius:16px;background:color-mix(in srgb,var(--dsw-alias-bg-base) 86%,transparent);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px)}
     .ss-nav:before{content:"";position:absolute;left:-28px;right:-28px;bottom:calc(100% + 1px);height:var(--dsh-frame-top-clearance,24px);background:var(--dsw-alias-bg-base);pointer-events:none}
-    .ss-nav-card{position:relative;display:flex;align-items:center;gap:10px;min-width:0;min-height:64px;padding:10px 12px;border-radius:14px;border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);cursor:pointer;text-align:left;transition:border-color .15s,background .15s,box-shadow .15s,transform .15s}
+    .ss-nav-card{position:relative;display:flex;align-items:center;gap:10px;min-width:0;min-height:58px;padding:10px 12px;border-radius:14px;border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);cursor:pointer;text-align:left;transition:border-color .15s,background .15s,box-shadow .15s,transform .15s}
     .ss-nav-card:hover{border-color:color-mix(in srgb,var(--dsw-alias-brand-primary) 45%,var(--dsw-alias-border-l1));transform:translateY(-1px);box-shadow:0 8px 20px rgba(0,0,0,.07)}
     .ss-nav-card.on{border-color:color-mix(in srgb,var(--dsw-alias-brand-primary) 65%,transparent);background:radial-gradient(120% 150% at 0 0,color-mix(in srgb,var(--dsw-alias-brand-primary) 11%,transparent),transparent 72%),var(--dsw-alias-bg-layer-1);box-shadow:0 0 0 3px color-mix(in srgb,var(--dsw-alias-brand-primary) 11%,transparent)}
     .ss-nav-card.on:after{content:"";position:absolute;left:14px;right:14px;bottom:-1px;height:2px;border-radius:2px;background:linear-gradient(90deg,var(--dsw-alias-brand-primary),color-mix(in srgb,var(--dsw-alias-brand-primary) 30%,transparent))}
     .ss-nav-card:focus-visible{outline:none;box-shadow:0 0 0 3px color-mix(in srgb,var(--dsw-alias-brand-primary) 24%,transparent)}
-    .ss-nav-icon{width:34px;height:34px;border-radius:11px;display:grid;place-items:center;flex:none;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-secondary);transition:background .15s,color .15s}
+    .ss-nav-icon{position:relative;width:34px;height:34px;border-radius:11px;display:grid;place-items:center;flex:none;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-secondary);transition:background .15s,color .15s}
     .ss-nav-card.on .ss-nav-icon{background:color-mix(in srgb,var(--dsw-alias-brand-primary) 16%,var(--dsw-alias-bg-layer-1));color:var(--dsw-alias-brand-primary)}
-    .ss-nav-copy{display:flex;flex-direction:column;gap:2px;min-width:0}
+    .ss-nav-dot{position:absolute;top:-2px;right:-2px;width:9px;height:9px;border-radius:50%;border:2px solid var(--dsw-alias-bg-layer-1);background:var(--dsw-alias-state-idle-primary)}
+    .ss-nav-dot.ok{background:var(--dsw-alias-state-success-primary)}
+    .ss-nav-dot.warn{background:var(--dsw-alias-state-warn-primary)}
+    .ss-nav-dot.bad{background:var(--dsw-alias-state-error-primary)}
+    .ss-nav-copy{display:flex;flex-direction:column;justify-content:center;gap:2px;min-width:0}
     .ss-nav-label{font-size:13px;font-weight:650;letter-spacing:.1px}
-    .ss-nav-hint{font-size:10.5px;color:var(--dsw-alias-label-secondary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .ss-nav-hint{font-size:10.5px;color:var(--dsw-alias-label-secondary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-variant-numeric:tabular-nums}
     .ss-nav-card.on .ss-nav-hint{color:color-mix(in srgb,var(--dsw-alias-brand-primary) 62%,var(--dsw-alias-label-secondary))}
     .ss-player{display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:10px 14px;border-radius:14px;border:1px solid color-mix(in srgb,var(--dsw-alias-brand-primary) 35%,var(--dsw-alias-border-l1));background:linear-gradient(90deg,color-mix(in srgb,var(--dsw-alias-brand-primary) 8%,transparent),transparent 55%),var(--dsw-alias-bg-layer-1);margin-bottom:14px}
     .ss-player-label{display:flex;align-items:center;gap:8px;flex:none;font-size:12px;font-weight:650;white-space:nowrap;color:var(--dsw-alias-brand-primary)}
@@ -304,52 +294,30 @@ window.__ModuleLoader__.load({
     .ss-search-title{font-size:12.5px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
     .ss-search-alias{font-size:10.5px;color:var(--dsw-alias-label-secondary);font-weight:400;margin-left:6px}
     .ss-search-meta{font-size:10.5px;color:var(--dsw-alias-label-secondary);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-    .ss-page-head{display:flex;align-items:center;justify-content:space-between;gap:14px;margin:2px 0 14px;flex-wrap:wrap}
-    .ss-page-head-main{display:flex;align-items:center;gap:11px;min-width:0}
-    .ss-page-head-icon{width:38px;height:38px;border-radius:12px;display:grid;place-items:center;flex:none;background:color-mix(in srgb,var(--dsw-alias-brand-primary) 11%,var(--dsw-alias-bg-layer-1));color:var(--dsw-alias-brand-primary);border:1px solid color-mix(in srgb,var(--dsw-alias-brand-primary) 22%,transparent)}
-    .ss-page-head-title{font-size:18px;font-weight:700;margin:0;letter-spacing:.1px}
-    .ss-page-head-desc{font-size:12px;line-height:1.6;color:var(--dsw-alias-label-secondary);margin:3px 0 0}
     .ss-card{background:var(--dsw-alias-bg-layer-1);border:1px solid var(--dsw-alias-border-l1);border-radius:16px;padding:18px;box-shadow:0 1px 2px rgba(0,0,0,.03)}
     .ss-card-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:14px;flex-wrap:wrap}
     .ss-card-heading{min-width:0}
     .ss-card-title{display:flex;align-items:center;gap:7px;margin:0;font-size:14px;font-weight:700;letter-spacing:.1px}
     .ss-card-title svg{color:var(--dsw-alias-brand-primary);flex:none}
-    .ss-card-desc{font-size:11.5px;line-height:1.6;color:var(--dsw-alias-label-secondary);margin:4px 0 0}
-    .ss-banner{display:flex;align-items:center;gap:14px;flex-wrap:wrap;padding:15px 17px;border-radius:16px;border:1px dashed color-mix(in srgb,var(--dsw-alias-brand-primary) 38%,var(--dsw-alias-border-l1));background:linear-gradient(90deg,color-mix(in srgb,var(--dsw-alias-brand-primary) 6%,transparent),transparent 65%),var(--dsw-alias-bg-layer-1);margin-bottom:14px}
-    .ss-banner-mark{width:38px;height:38px;border-radius:12px;display:grid;place-items:center;flex:none;background:color-mix(in srgb,var(--dsw-alias-brand-primary) 13%,var(--dsw-alias-bg-layer-1));color:var(--dsw-alias-brand-primary)}
-    .ss-banner-body{flex:1;min-width:200px}
-    .ss-banner-title{font-size:13px;font-weight:700}
-    .ss-banner-desc{font-size:11.5px;line-height:1.6;color:var(--dsw-alias-label-secondary);margin-top:2px}
+    .ss-tip{position:relative;display:inline-flex;align-items:center;gap:2px;cursor:help;outline:none}
+    .ss-tip.plain{display:inline}
+    .ss-tip:hover,.ss-tip:focus-visible{color:var(--dsw-alias-brand-primary)}
+    .ss-tip:focus-visible{outline:none;border-radius:4px;box-shadow:0 0 0 2px color-mix(in srgb,var(--dsw-alias-brand-primary) 25%,transparent)}
+    .ss-tip:after{content:attr(data-tip);position:absolute;left:0;top:calc(100% + 6px);z-index:40;width:max-content;max-width:min(280px,calc(100vw - 48px));padding:7px 9px;border-radius:8px;border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-overlay);box-shadow:0 10px 28px rgba(0,0,0,.24);color:var(--dsw-alias-label-primary);font-size:11px;font-weight:400;line-height:1.55;letter-spacing:0;text-align:left;white-space:normal;opacity:0;transform:translateY(3px);transition:opacity .12s,transform .12s;pointer-events:none}
+    .ss-tip:hover:after,.ss-tip:focus:after,.ss-tip:focus-visible:after{opacity:1;transform:translateY(0)}
+    .ss-tip.up:after{top:auto;bottom:calc(100% + 7px);transform:translateY(-3px)}
+    .ss-tip.up:hover:after,.ss-tip.up:focus:after,.ss-tip.up:focus-visible:after{transform:translateY(0)}
+    .ss-tip.side:after{left:calc(100% + 8px);top:50%;bottom:auto;transform:translate(-2px,-50%)}
+    .ss-tip.side:hover:after,.ss-tip.side:focus:after,.ss-tip.side:focus-visible:after{transform:translate(0,-50%)}
     .ss-grid{display:grid;gap:14px}
-    .ss-g2{grid-template-columns:repeat(2,minmax(0,1fr))}
-    .ss-g3{grid-template-columns:repeat(3,minmax(0,1fr))}
     .ss-main-side{grid-template-columns:minmax(0,1fr) 320px;align-items:start}
-    .ss-overview-grid{grid-template-columns:minmax(0,1.3fr) minmax(0,.9fr);align-items:start}
-    .ss-metrics{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin:0 0 14px}
-    .ss-metric{position:relative;overflow:hidden;background:linear-gradient(150deg,color-mix(in srgb,var(--dsw-alias-brand-primary) 6%,transparent),transparent 62%),var(--dsw-alias-bg-layer-1);border:1px solid var(--dsw-alias-border-l1);border-radius:14px;padding:13px 15px}
-    .ss-metric .k{font-size:11px;color:var(--dsw-alias-label-secondary);margin-bottom:6px}
-    .ss-metric .v{font-size:20px;font-weight:720;letter-spacing:.1px;font-variant-numeric:tabular-nums}
-    .ss-metric .h{font-size:10.5px;color:var(--dsw-alias-label-secondary);margin-top:4px;line-height:1.45}
-    .ss-flow{display:flex;flex-direction:column;gap:2px}
-    .ss-flow-row{display:flex;align-items:center;gap:11px;width:100%;padding:10px 9px;border:0;border-radius:11px;background:transparent;color:var(--dsw-alias-label-primary);text-align:left;cursor:pointer;transition:background .12s}
-    .ss-flow-row:hover{background:var(--dsw-alias-bg-layer-2)}
-    .ss-flow-num{width:27px;height:27px;border-radius:9px;display:grid;place-items:center;flex:none;font-size:11px;font-weight:700;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-secondary);border:1px solid var(--dsw-alias-border-l1)}
-    .ss-flow-row.done .ss-flow-num{background:color-mix(in srgb,var(--dsw-alias-state-success-primary) 13%,var(--dsw-alias-bg-layer-1));border-color:color-mix(in srgb,var(--dsw-alias-state-success-primary) 32%,transparent);color:var(--dsw-alias-state-success-primary)}
-    .ss-flow-main{flex:1;min-width:0}
-    .ss-flow-name{display:block;font-size:12.5px;font-weight:600}
-    .ss-flow-meta{display:block;font-size:10.5px;color:var(--dsw-alias-label-secondary);margin-top:1px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-    .ss-flow-arrow{color:var(--dsw-alias-label-secondary);flex:none;opacity:.6}
-    .ss-actions{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}
-    .ss-action{display:flex;flex-direction:column;gap:8px;padding:16px;border-radius:14px;border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-2)}
-    .ss-action-num{width:26px;height:26px;border-radius:9px;display:grid;place-items:center;font-size:11px;font-weight:700;background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-brand-primary);border:1px solid color-mix(in srgb,var(--dsw-alias-brand-primary) 25%,transparent)}
-    .ss-action h4{margin:0;font-size:13px;font-weight:700}
-    .ss-action p{margin:0;font-size:11px;line-height:1.65;color:var(--dsw-alias-label-secondary);flex:1}
-    .ss-action .ss-btn{margin-top:2px;justify-content:center}
+    .ss-top-grid{display:grid;grid-template-columns:minmax(0,1fr) 380px;gap:14px;align-items:start}
+    .ss-top-grid .ss-settings-grid{grid-template-columns:1fr}
+    .ss-timeline-settings{min-width:0}
     .ss-form-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px 14px}
     .ss-field{display:flex;flex-direction:column;gap:5px;min-width:0}
     .ss-field.wide{grid-column:1/-1}
-    .ss-field label{font-size:11px;color:var(--dsw-alias-label-secondary)}
-    .ss-field-hint{font-size:10.5px;line-height:1.5;color:var(--dsw-alias-label-secondary)}
+    .ss-field label{display:flex;align-items:center;gap:4px;font-size:11px;color:var(--dsw-alias-label-secondary);min-height:14px}
     .ss-input,.ss-select{height:36px;border-radius:9px;border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);padding:0 10px;font-size:12.5px;outline:none;min-width:0;width:100%;box-sizing:border-box}
     .ss-select{cursor:pointer}
     .ss-input:focus,.ss-select:focus{border-color:var(--dsw-alias-brand-primary);box-shadow:0 0 0 3px color-mix(in srgb,var(--dsw-alias-brand-primary) 13%,transparent)}
@@ -361,23 +329,6 @@ window.__ModuleLoader__.load({
     .ss-btn.ghost{background:transparent}
     .ss-btn:disabled{opacity:.42;cursor:not-allowed;filter:none}
     .ss-btn.sm{height:28px;padding:0 10px;font-size:11.5px;border-radius:7px}
-    .ss-backends{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-top:12px}
-    .ss-backend{display:flex;align-items:flex-start;gap:10px;padding:12px;border-radius:12px;border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);text-align:left;cursor:pointer;transition:border-color .12s,box-shadow .12s,background .12s}
-    .ss-backend:hover{border-color:color-mix(in srgb,var(--dsw-alias-brand-primary) 45%,var(--dsw-alias-border-l1))}
-    .ss-backend.on{border-color:color-mix(in srgb,var(--dsw-alias-brand-primary) 62%,transparent);box-shadow:0 0 0 3px color-mix(in srgb,var(--dsw-alias-brand-primary) 10%,transparent);background:color-mix(in srgb,var(--dsw-alias-brand-primary) 5%,var(--dsw-alias-bg-layer-2))}
-    .ss-backend-radio{width:14px;height:14px;border-radius:50%;border:1.5px solid var(--dsw-alias-border-l2);flex:none;margin-top:2px;position:relative}
-    .ss-backend.on .ss-backend-radio{border-color:var(--dsw-alias-brand-primary)}
-    .ss-backend.on .ss-backend-radio:after{content:"";position:absolute;inset:2.5px;border-radius:50%;background:var(--dsw-alias-brand-primary)}
-    .ss-backend-body{display:flex;flex-direction:column;gap:3px;min-width:0;flex:1}
-    .ss-backend-title{font-size:12.5px;font-weight:650}
-    .ss-backend-desc{font-size:10.5px;line-height:1.55;color:var(--dsw-alias-label-secondary)}
-    .ss-inline-meta{display:flex;gap:7px;flex-wrap:wrap;margin-top:11px}
-    .ss-history{display:flex;flex-direction:column;gap:1px;margin-top:2px}
-    .ss-history-row{display:flex;align-items:center;justify-content:space-between;gap:10px;font-size:11.5px;color:var(--dsw-alias-label-secondary);padding:8px 4px;border-bottom:1px solid var(--dsw-alias-border-l1)}
-    .ss-history-row:last-child{border-bottom:0}
-    .ss-history-main{display:flex;flex-direction:column;gap:1px;min-width:0}
-    .ss-history-name{font-size:11.5px;font-weight:600;color:var(--dsw-alias-label-primary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-    .ss-history-meta{font-size:10px;color:var(--dsw-alias-label-secondary)}
     .ss-canvas-wrap{position:relative;margin-top:2px}
     .ss-canvas{display:block;width:100%;border-radius:12px;background:var(--dsw-alias-bg-layer-2);cursor:crosshair}
     .ss-legend{display:flex;gap:14px;flex-wrap:wrap;font-size:10.5px;color:var(--dsw-alias-label-secondary);margin-top:9px;line-height:1.6}
@@ -390,8 +341,9 @@ window.__ModuleLoader__.load({
     .ss-phrase.on b{color:var(--dsw-alias-brand-primary)}
     .ss-phrase-info{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:4px;flex-wrap:wrap}
     .ss-tooltip{position:absolute;pointer-events:none;z-index:3;background:var(--dsw-alias-bg-overlay);border:1px solid var(--dsw-alias-border-l2);border-radius:8px;padding:6px 8px;font-size:11px;color:var(--dsw-alias-label-primary);box-shadow:0 8px 24px rgba(0,0,0,.18);white-space:nowrap;transform:translate(10px,-50%)}
-    .ss-audio{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:12px}
-    .ss-audio audio{height:34px;flex:1;min-width:260px}
+    .ss-kv{display:grid;grid-template-columns:auto minmax(0,1fr);gap:7px 14px;align-items:baseline;font-size:12px}
+    .ss-kv .k{color:var(--dsw-alias-label-secondary);white-space:nowrap}
+    .ss-kv .v{min-width:0;word-break:break-all;font-variant-numeric:tabular-nums}
     .ss-section-title{display:flex;align-items:center;justify-content:space-between;gap:10px;font-size:13px;font-weight:700;margin:0 0 10px}
     .ss-table-wrap{overflow:auto}
     .ss-table{width:100%;border-collapse:collapse;font-size:11.5px;min-width:560px}
@@ -434,15 +386,13 @@ window.__ModuleLoader__.load({
     .ss-empty h3{margin:0 0 7px;font-size:16px}
     .ss-empty p{margin:0 auto;max-width:600px;color:var(--dsw-alias-label-secondary);font-size:12px;line-height:1.75}
     .ss-empty-actions{display:flex;justify-content:center;gap:9px;flex-wrap:wrap;margin-top:15px}
-    .ss-steps{display:flex;justify-content:center;gap:8px;flex-wrap:wrap;margin-top:16px}
-    .ss-step{padding:6px 10px;border-radius:999px;border:1px solid var(--dsw-alias-border-l1);font-size:11px;color:var(--dsw-alias-label-secondary);background:var(--dsw-alias-bg-layer-2)}
     .ss-settings-sections{display:flex;flex-direction:column}
     .ss-settings-section{border-top:1px solid var(--dsw-alias-border-l1);padding:4px 0}
     .ss-settings-section:first-child{border-top:0}
     .ss-settings-section summary{display:flex;align-items:center;justify-content:space-between;gap:12px;list-style:none;cursor:pointer;padding:10px 2px;border-radius:8px}
     .ss-settings-section summary::-webkit-details-marker{display:none}
     .ss-settings-summary{display:flex;align-items:baseline;gap:9px;flex-wrap:wrap;min-width:0}
-    .ss-settings-title{font-size:12.5px;font-weight:650}
+    .ss-settings-title{display:inline-flex;align-items:center;gap:4px;font-size:12.5px;font-weight:650}
     .ss-settings-desc{font-size:10.5px;color:var(--dsw-alias-label-secondary);line-height:1.5}
     .ss-settings-chevron{color:var(--dsw-alias-label-secondary);flex:none;transition:transform .15s}
     .ss-settings-section[open] .ss-settings-chevron{transform:rotate(180deg)}
@@ -453,8 +403,7 @@ window.__ModuleLoader__.load({
     .ss-savebar-text{font-size:11.5px;color:var(--dsw-alias-label-secondary);flex:1;min-width:140px}
     .ss-savebar-text.dirty{color:var(--dsw-alias-state-warn-primary);font-weight:600}
     .ss-savebar-actions{display:flex;gap:8px;flex-wrap:wrap}
-    .ss-check{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px}
-    .ss-env-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px 18px;margin-top:4px}
+    .ss-env-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:10px 18px;margin-top:4px}
     .ss-env-item{display:flex;gap:9px;align-items:flex-start;min-width:0;padding:8px 8px;border-radius:10px;background:var(--dsw-alias-bg-layer-2);border:1px solid var(--dsw-alias-border-l1)}
     .ss-dot{width:8px;height:8px;border-radius:50%;margin-top:5px;flex:0 0 auto;background:var(--dsw-alias-state-error-primary)}
     .ss-dot.ok{background:var(--dsw-alias-state-success-primary)}
@@ -490,38 +439,105 @@ window.__ModuleLoader__.load({
     .ss-cover-title{font-size:12px;font-weight:600}
     .ss-cover-meta{font-size:10.5px;color:var(--dsw-alias-label-secondary);font-variant-numeric:tabular-nums}
     .ss-cover-row audio{height:30px;max-width:260px}
+    .ss-cover-toolbar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:2px}
+    .ss-cover-toolbar .ss-input{flex:1;min-width:200px;max-width:360px;height:32px}
+    .ss-cover-pager{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;padding-top:8px;border-top:1px solid var(--dsw-alias-border-l1)}
+    .ss-soulx-list{display:flex;flex-direction:column;gap:6px;margin-top:10px}
+    .ss-soulx-item{display:flex;align-items:center;gap:10px;justify-content:space-between;padding:8px 10px;border:1px solid var(--dsw-alias-border-l1);border-radius:10px;background:var(--dsw-alias-bg-layer-2)}
+    .ss-soulx-main{display:flex;flex-direction:column;gap:2px;min-width:0;flex:1}
+    .ss-soulx-name{font-size:12px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .ss-soulx-meta{font-size:10.5px;color:var(--dsw-alias-label-secondary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .ss-pager-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+    .ss-pager-num{font-size:11px;color:var(--dsw-alias-label-secondary);font-variant-numeric:tabular-nums;min-width:48px;text-align:center}
     .ss-tabs{display:flex;gap:6px;flex-wrap:wrap;margin:0 0 14px;padding:5px;border-radius:12px;border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-1);width:fit-content;max-width:100%}
     .ss-tab{height:30px;padding:0 14px;border-radius:8px;border:1px solid transparent;background:transparent;color:var(--dsw-alias-label-secondary);font-size:12px;font-weight:600;cursor:pointer}
     .ss-tab:hover{color:var(--dsw-alias-label-primary)}
     .ss-tab.on{background:var(--dsw-alias-bg-layer-2);border-color:var(--dsw-alias-border-l1);color:var(--dsw-alias-label-primary)}
     .ss-train-stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:9px;margin-top:12px}
     .ss-train-stat{display:flex;flex-direction:column;gap:3px;padding:9px 11px;border-radius:11px;background:var(--dsw-alias-bg-layer-2);border:1px solid var(--dsw-alias-border-l1);min-width:0}
-    .ss-train-stat .k{font-size:10px;color:var(--dsw-alias-label-secondary);white-space:nowrap}
+    .ss-train-stat .k{display:flex;align-items:center;gap:4px;font-size:10px;color:var(--dsw-alias-label-secondary);white-space:nowrap}
     .ss-train-stat .v{font-size:17px;font-weight:720;font-variant-numeric:tabular-nums;letter-spacing:.1px}
-    .ss-train-stat .h{font-size:9.5px;color:var(--dsw-alias-label-secondary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
     .ss-train-stat.fit .v{color:var(--dsw-alias-brand-primary)}
     .ss-train-path{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
-    .ss-train-path .ss-input{flex:1;min-width:220px}
-    .ss-spark{display:block;width:100%;height:58px;margin-top:10px;border-radius:10px;background:var(--dsw-alias-bg-layer-2);border:1px solid var(--dsw-alias-border-l1)}
+    .ss-train-path .ss-input{flex:1;min-width:220px;height:38px}
+    .ss-train-tabs{margin-bottom:14px}
+    .ss-train-tabs .ss-tab{display:inline-flex;align-items:center;gap:6px}
+    .ss-train-tabs .ss-tab svg{opacity:.65}
+    .ss-train-tabs .ss-tab.on svg{opacity:1;color:var(--dsw-alias-brand-primary)}
+    .ss-train-layout{display:grid;grid-template-columns:minmax(0,1fr);gap:14px;align-items:start}
+    .ss-train-layout.with-side{grid-template-columns:minmax(0,1fr) 300px}
+    .ss-train-main,.ss-train-side{min-width:0}
+    .ss-train-card{padding:0}
+    .ss-train-section{padding:18px}
+    .ss-train-section + .ss-train-section{border-top:1px solid var(--dsw-alias-border-l1)}
+    .ss-train-label{display:flex;align-items:center;gap:7px;margin:0 0 11px;font-size:12px;font-weight:680;letter-spacing:.02em}
+    .ss-train-label:before{content:"";width:5px;height:5px;border-radius:50%;background:var(--dsw-alias-brand-primary);box-shadow:0 0 0 3px color-mix(in srgb,var(--dsw-alias-brand-primary) 12%,transparent)}
+    .ss-train-foot{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;padding:14px 18px;border-top:1px solid var(--dsw-alias-border-l1);background:color-mix(in srgb,var(--dsw-alias-bg-layer-2) 34%,transparent);border-radius:0 0 16px 16px}
+    .ss-train-foot-hint{flex:1;min-width:160px;font-size:11.5px;line-height:1.5;color:var(--dsw-alias-label-secondary)}
+    .ss-train-foot-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+    .ss-train-status{padding:0 18px 18px}
+    .ss-train-status .ss-job{margin-top:0}
+    .ss-train-result{margin:0 18px 18px;padding:14px;border-radius:12px;border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-2)}
+    .ss-train-result .ss-train-stats{margin-top:11px}
+    .ss-result-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap;min-width:0}
+    .ss-result-name{font-size:12.5px;font-weight:650;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .ss-result-meta{font-size:10.5px;color:var(--dsw-alias-label-secondary);font-variant-numeric:tabular-nums}
+    .ss-result-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:12px}
+    .ss-toggle{display:flex;align-items:center;gap:8px;height:36px;padding:0 10px;border-radius:9px;border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-2);font-size:12.5px;cursor:pointer;user-select:none;box-sizing:border-box}
+    .ss-field label.ss-toggle{height:36px;min-height:0;padding:0 10px;gap:8px;font-size:12.5px;font-weight:500;color:var(--dsw-alias-label-primary)}
+    .ss-toggle:hover{border-color:color-mix(in srgb,var(--dsw-alias-brand-primary) 45%,var(--dsw-alias-border-l1))}
+    .ss-toggle input{width:15px;height:15px;margin:0;accent-color:var(--dsw-alias-brand-primary)}
+    .ss-train-history{padding:16px}
+    .ss-train-history .ss-card-head{margin-bottom:12px}
+    .ss-history-list{display:flex;flex-direction:column;gap:14px;max-height:520px;overflow:auto;padding-right:2px}
+    .ss-history-group{display:flex;flex-direction:column;gap:5px;min-width:0}
+    .ss-history-group-head{display:flex;align-items:baseline;justify-content:space-between;gap:8px;min-width:0}
+    .ss-history-name{font-size:11.5px;font-weight:650;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .ss-history-time{flex:none;font-size:10px;color:var(--dsw-alias-label-secondary);font-variant-numeric:tabular-nums}
+    .ss-history-row{display:flex;align-items:center;gap:8px;width:100%;padding:7px 9px;border-radius:8px;border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);cursor:pointer;text-align:left;font:inherit}
+    .ss-history-row:hover{border-color:color-mix(in srgb,var(--dsw-alias-brand-primary) 45%,var(--dsw-alias-border-l1))}
+    .ss-history-row.on{border-color:color-mix(in srgb,var(--dsw-alias-brand-primary) 62%,transparent);background:color-mix(in srgb,var(--dsw-alias-brand-primary) 9%,var(--dsw-alias-bg-layer-2))}
+    .ss-history-epoch{flex:1;font-size:11.5px;font-weight:600}
+    .ss-history-fit{font-size:10.5px;color:var(--dsw-alias-label-secondary);font-variant-numeric:tabular-nums}
+    .ss-history-row.on .ss-history-fit{color:var(--dsw-alias-brand-primary)}
+    .ss-history-note{font-size:9.5px;padding:1px 5px;border-radius:999px;border:1px solid color-mix(in srgb,var(--dsw-alias-state-warn-primary) 30%,transparent);color:var(--dsw-alias-state-warn-primary);white-space:nowrap}
+    .ss-history-go{display:grid;place-items:center;color:var(--dsw-alias-label-secondary);opacity:.55}
+    .ss-history-go svg{transform:rotate(-90deg)}
+    .ss-history-row:hover .ss-history-go{opacity:1;color:var(--dsw-alias-brand-primary)}
+    .ss-model-path{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:10.5px;color:var(--dsw-alias-label-secondary)}
+    .ss-model-context{display:flex;align-items:center;gap:7px;flex-wrap:wrap;margin-top:8px;padding-top:8px;border-top:1px solid var(--dsw-alias-border-l1);min-width:0}
+    .ss-model-context-label{flex:none;font-size:10.5px;color:var(--dsw-alias-label-secondary)}
+    .ss-model-context .ss-model-path{flex:1;min-width:120px}
+    .ss-inspect{margin-top:12px;padding:11px 12px;border:1px solid var(--dsw-alias-border-l1);border-radius:12px;background:var(--dsw-alias-bg-layer-2)}
+    .ss-inspect-head{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:8px}
+    .ss-inspect .ss-kv{font-size:11.5px}
+    .ss-inspect-msg{margin-top:7px;font-size:11px;line-height:1.55;color:var(--dsw-alias-state-warn-primary);word-break:break-word}
+    .ss-inspect-msg.dim{color:var(--dsw-alias-label-secondary)}
+    .ss-inspect-actions{display:flex;align-items:center;gap:7px;flex-wrap:wrap;margin-top:10px}
     .ss-help{font-size:10.5px;line-height:1.55;color:var(--dsw-alias-label-secondary)}
     .ss-train-check{font-size:11px;line-height:1.55;margin-top:8px;color:var(--dsw-alias-label-secondary)}
     .ss-train-check.ok{color:var(--dsw-alias-state-success-primary)}
     .ss-train-check.bad{color:var(--dsw-alias-state-warn-primary)}
-    .ss-train-result .ss-kv{display:grid;grid-template-columns:auto 1fr;gap:5px 12px;font-size:11.5px}
-    .ss-train-result .ss-kv .k{color:var(--dsw-alias-label-secondary)}
-    .ss-train-result .ss-kv .v{word-break:break-all}
-    .ss-env-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px;align-items:center}
-    .ss-device-grid{display:grid;grid-template-columns:1fr;gap:9px}
+    .ss-device-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:9px}
     .ss-device{padding:11px 12px;border-radius:12px;border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-2)}
     .ss-device .k{font-size:10.5px;color:var(--dsw-alias-label-secondary);margin-bottom:4px}
     .ss-device .v{font-size:12.5px;font-weight:650;line-height:1.4}
+    .ss-device .ss-select{height:30px;margin-top:5px;font-size:11px}
     .ss-device .h{font-size:10px;color:var(--dsw-alias-label-secondary);margin-top:3px}
     .ss-toast{position:fixed;left:50%;bottom:26px;transform:translateX(-50%);z-index:40;background:var(--dsw-alias-bg-overlay);border:1px solid var(--dsw-alias-border-l2);border-radius:10px;padding:10px 16px;font-size:12.5px;box-shadow:0 12px 36px rgba(0,0,0,.22);max-width:70vw}
     .ss-toast.bad{color:var(--dsw-alias-state-error-primary)}
-    @media (max-width:1180px){.ss-nav{position:static;padding:0;margin:16px 0;background:transparent;backdrop-filter:none;-webkit-backdrop-filter:none}.ss-nav:before{display:none}.ss-nav{grid-template-columns:repeat(4,minmax(0,1fr))}.ss-main-side{grid-template-columns:1fr}.ss-overview-grid{grid-template-columns:1fr}.ss-metrics{grid-template-columns:repeat(2,minmax(0,1fr))}}
-    @media (max-width:900px){.ss-actions{grid-template-columns:1fr}.ss-hero{align-items:flex-start;flex-wrap:wrap}.ss-hero-side{align-items:flex-start;width:100%}.ss-pills{justify-content:flex-start}.ss-inner{padding:20px 20px 46px}}
-    @media (max-width:760px){.ss-player-side{flex-wrap:wrap}.ss-player-body{min-width:100%}.ss-form-grid{grid-template-columns:1fr}.ss-backends{grid-template-columns:1fr}.ss-settings-grid{grid-template-columns:1fr}.ss-env-grid{grid-template-columns:1fr}.ss-g2,.ss-g3{grid-template-columns:1fr}.ss-card{padding:16px}.ss-nav{grid-template-columns:repeat(2,minmax(0,1fr))}.ss-train-stats{grid-template-columns:repeat(2,minmax(0,1fr))}}
-    @media (max-width:520px){.ss-inner{padding:16px 14px 40px}.ss-hero{padding:18px 16px;border-radius:16px}.ss-hero-mark{width:48px;height:48px;border-radius:15px}.ss-title{font-size:22px}.ss-metrics{grid-template-columns:1fr}.ss-nav{gap:8px}.ss-nav-card{padding:9px 10px;min-height:58px}.ss-nav-icon{width:30px;height:30px;border-radius:9px}.ss-page-head{align-items:flex-start;flex-direction:column}.ss-pills{justify-content:flex-start}}
+    .ss-modal-mask{position:fixed;inset:0;z-index:60;display:flex;align-items:center;justify-content:center;padding:20px;background:rgba(6,10,18,.55)}
+    .ss-modal{width:min(540px,94vw);border-radius:16px;border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-overlay);box-shadow:0 24px 64px rgba(0,0,0,.35);padding:18px 18px 14px}
+    .ss-modal-title{font-size:14px;font-weight:700;color:var(--dsw-alias-label-primary)}
+    .ss-modal-text{margin-top:8px;font-size:12.5px;line-height:1.65;color:var(--dsw-alias-label-secondary)}
+    .ss-modal-list{margin:10px 0 0;padding:10px 12px;list-style:none;border-radius:10px;border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-2);font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px;line-height:1.75;color:var(--dsw-alias-label-secondary);word-break:break-all;max-height:180px;overflow:auto}
+    .ss-modal-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:14px}
+    .ss-btn.danger{background:var(--dsw-alias-state-error-primary);border-color:var(--dsw-alias-state-error-primary);color:#fff}
+    .ss-btn.danger:hover{filter:brightness(1.06)}
+    @media (max-width:1180px){.ss-nav{position:static;padding:0;margin:16px 0;background:transparent;backdrop-filter:none;-webkit-backdrop-filter:none}.ss-nav:before{display:none}.ss-nav{grid-template-columns:repeat(4,minmax(0,1fr))}.ss-main-side{grid-template-columns:1fr}.ss-train-layout.with-side{grid-template-columns:1fr}.ss-top-grid{grid-template-columns:1fr}}
+    @media (max-width:900px){.ss-hero{align-items:flex-start;flex-wrap:wrap}.ss-pills{justify-content:flex-start}.ss-inner{padding:20px 20px 46px}}
+    @media (max-width:760px){.ss-player-side{flex-wrap:wrap}.ss-player-body{min-width:100%}.ss-form-grid{grid-template-columns:1fr}.ss-settings-grid{grid-template-columns:1fr}.ss-card{padding:16px}.ss-nav{grid-template-columns:repeat(2,minmax(0,1fr))}.ss-train-stats{grid-template-columns:repeat(2,minmax(0,1fr))}}
+    @media (max-width:520px){.ss-inner{padding:16px 14px 40px}.ss-hero{padding:18px 16px;border-radius:16px}.ss-hero-mark{width:48px;height:48px;border-radius:15px}.ss-title{font-size:22px}.ss-nav{gap:8px}.ss-nav-card{padding:9px 10px;min-height:58px}.ss-nav-icon{width:30px;height:30px;border-radius:9px}.ss-pills{justify-content:flex-start}}
     @media (prefers-reduced-motion:reduce){.ss-page *{transition:none!important}}
     `
 
@@ -532,12 +548,25 @@ window.__ModuleLoader__.load({
       }, h('path', { d }))
     }
 
-    function Card({ title, desc, icon, right, children, className, style }) {
+    // 说明放在悬浮提示里：界面只保留字段本身，不再给每个标签加 ⓘ。
+    function Tip({ tip, children, up, side, plain, className }) {
+      if (!tip) return children
+      return h('span', {
+        className: cx('ss-tip', up && 'up', side && 'side', plain && 'plain', className),
+        tabIndex: 0, 'data-tip': tip,
+        'aria-label': typeof children === 'string' ? `${children}：${tip}` : tip,
+        onClick: (e) => e.stopPropagation(),
+        onKeyDown: (e) => e.stopPropagation(),
+      }, children)
+    }
+
+    function Card({ title, icon, tip, right, children, className, style }) {
       const head = title || right
         ? h('div', { className: 'ss-card-head' },
           h('div', { className: 'ss-card-heading' },
-            title ? h('h3', { className: 'ss-card-title' }, icon ? h(NavIcon, { d: icon, size: 16 }) : null, title) : null,
-            desc ? h('p', { className: 'ss-card-desc' }, desc) : null,
+            title ? h('h3', { className: 'ss-card-title' },
+              icon ? h(NavIcon, { d: icon, size: 16 }) : null,
+              tip ? h(Tip, { tip, side: true, plain: true }, title) : title) : null,
           ),
           right || null,
         )
@@ -545,44 +574,22 @@ window.__ModuleLoader__.load({
       return h('section', { className: cx('ss-card', className), style }, head, children)
     }
 
-    function PageIntro({ icon, title, desc, right }) {
-      return h('div', { className: 'ss-page-head' },
-        h('div', { className: 'ss-page-head-main' },
-          h('span', { className: 'ss-page-head-icon' }, h(NavIcon, { d: icon, size: 19 })),
-          h('div', null,
-            h('h2', { className: 'ss-page-head-title' }, title),
-            desc ? h('p', { className: 'ss-page-head-desc' }, desc) : null,
-          ),
-        ),
-        right || null,
-      )
-    }
-
-    function Metric({ label, value, hint }) {
-      return h('div', { className: 'ss-metric' },
-        h('div', { className: 'k' }, label),
-        h('div', { className: 'v' }, value),
-        hint ? h('div', { className: 'h' }, hint) : null,
-      )
-    }
-
-    function Empty({ icon, title, desc, actions }) {
-      return h('div', { className: 'ss-empty' },
-        h('span', { className: 'ss-empty-icon' }, h(NavIcon, { d: icon || ICON.info, size: 22 })),
-        h('h3', null, title),
-        desc ? h('p', null, desc) : null,
-        actions ? h('div', { className: 'ss-empty-actions' }, actions) : null,
-      )
-    }
-
     function JobProgress({ job, onCancel }) {
       if (!job) return null
       const percent = Math.round((job.progress || 0) * 100)
       const started = Number(job.startedAt) || 0
       const elapsed = job.status === 'running' && started ? Math.max(0, (Date.now() - started) / 1000) : 0
-      const eta = job.status === 'running' && job.progress > 0.03 && elapsed > 5
+      // 分离阶段的百分比来自 audio-separator 的批次进度，模型加载和首个批次可能长时间停在 12%；
+      // 用平均速度外推会让剩余时间越算越长，所以这里只显示已用时间，进入 F0 分析后再显示 ETA。
+      const separating = job.status === 'running' && /分离/.test(String(job.stage || ''))
+      const eta = !separating && job.status === 'running' && job.progress > 0.03 && elapsed > 5
         ? elapsed * (1 - job.progress) / job.progress
         : null
+      const timeNote = eta != null
+        ? `预计剩余 ${fmtEta(eta)}`
+        : separating && elapsed >= 1
+          ? `已用 ${fmtShort(elapsed)}`
+          : ''
       return h('div', { className: 'ss-job' },
         h('div', { className: 'ss-job-top' },
           h('span', { className: 'ss-tag ' + statusTone(job.status) }, jobLabel(job.status)),
@@ -593,10 +600,9 @@ window.__ModuleLoader__.load({
             : null,
         ),
         h('div', { className: 'ss-bar' }, h('i', { style: { width: `${percent}%` } })),
-        job.message || eta != null
+        job.message || timeNote
           ? h('div', { className: 'ss-job-msg' },
-            job.message || '',
-            eta != null ? `${job.message ? ' · ' : ''}预计剩余 ${fmtEta(eta)}` : '')
+            [job.message, timeNote].filter(Boolean).join(' · '))
           : null,
       )
     }
@@ -650,7 +656,7 @@ window.__ModuleLoader__.load({
             },
           },
             h(NavIcon, { d: ICON.upload, size: 13 }),
-            active ? `正在写入… ${percent}%` : '下载好后，把文件拖到这里，或点击选择',
+            active ? `正在写入… ${percent}%` : '拖入已下载的文件，或点击选择',
             active ? h('span', { className: 'ss-bar' }, h('i', { style: { width: `${percent}%` } })) : null,
           ),
           h('input', {
@@ -703,10 +709,11 @@ window.__ModuleLoader__.load({
     }
 
     /** 设备卡片里的预加载 / 暂停 / 卸载操作。 */
-    function DeviceActions({ backend, warmup, loaded, busy, unloading, onPreload, onStop, onUnload }) {
+    function DeviceActions({ backend, warmup, loaded, loadedModel, selectedModel, busy, unloading, onPreload, onStop, onUnload }) {
       const label = backend === 'soulx' ? 'SoulX' : 'RVC'
       const loading = Boolean(warmup && (warmup.status === 'loading' || warmup.status === 'cancelling'))
       const showRing = Boolean(warmup && (loading || warmup.status === 'done' || warmup.status === 'error'))
+      const changed = Boolean(loaded && selectedModel && (!loadedModel || selectedModel !== loadedModel))
       return h('div', { className: 'ss-device-act' },
         showRing ? h(WarmupRing, { warmup, onStop }) : null,
         loading
@@ -715,43 +722,21 @@ window.__ModuleLoader__.load({
             disabled: warmup.status === 'cancelling',
           }, warmup.status === 'cancelling' ? '暂停中…' : '暂停')
           : loaded
-            ? h('button', {
-              type: 'button', className: 'ss-btn sm ghost', onClick: onUnload,
-              disabled: busy || unloading,
-            }, unloading ? '卸载中…' : '卸载模型')
+            ? changed
+              ? h('button', {
+                type: 'button', className: 'ss-btn sm', onClick: onPreload,
+                disabled: busy,
+              }, loading ? '加载中…' : '加载所选模型')
+              : h('button', {
+                type: 'button', className: 'ss-btn sm ghost', onClick: onUnload,
+                disabled: busy || unloading,
+              }, unloading ? '卸载中…' : '卸载模型')
             : warmup && warmup.status === 'done'
               ? null
               : h('button', {
                 type: 'button', className: 'ss-btn sm', onClick: onPreload,
                 disabled: busy,
               }, `预加载 ${label}`),
-      )
-    }
-
-    function FitSpark({ history }) {
-      const rows = (history || []).filter((x) => x && x.fit != null)
-      if (rows.length < 2) {
-        return h('div', { className: 'ss-help', style: { marginTop: 8 } }, '拟合度曲线会在第 2 轮结束后出现。')
-      }
-      const W = 100
-      const H = 40
-      const points = rows.map((row, i) => {
-        const x = rows.length < 2 ? 0 : (i / (rows.length - 1)) * W
-        const y = H - (Math.max(0, Math.min(100, Number(row.fit) || 0)) / 100) * H
-        return [Math.round(x * 100) / 100, Math.round(y * 100) / 100]
-      })
-      const last = points[points.length - 1]
-      const line = points.map((p) => p.join(',')).join(' ')
-      return h('svg', { className: 'ss-spark', viewBox: `0 0 ${W} ${H}`, preserveAspectRatio: 'none', role: 'img', 'aria-label': '拟合度曲线' },
-        [25, 50, 75].map((v) => h('line', {
-          key: 'g' + v, x1: 0, x2: W, y1: H - (v / 100) * H, y2: H - (v / 100) * H,
-          stroke: 'var(--dsw-alias-border-l1)', strokeWidth: 0.3, vectorEffect: 'non-scaling-stroke',
-        })),
-        h('polyline', {
-          points: line, fill: 'none', stroke: 'var(--dsw-alias-brand-primary)',
-          strokeWidth: 1.6, strokeLinejoin: 'round', strokeLinecap: 'round', vectorEffect: 'non-scaling-stroke',
-        }),
-        h('circle', { cx: last[0], cy: last[1], r: 1.8, fill: 'var(--dsw-alias-brand-primary)' }),
       )
     }
 
@@ -765,41 +750,33 @@ window.__ModuleLoader__.load({
       const loss = detail.loss == null ? '—' : Number(detail.loss).toFixed(1)
       const eta = job.status === 'done' ? '已完成' : job.status === 'error' ? '—' : fmtEta(detail.etaSec)
       const live = job.status === 'queued' || job.status === 'running'
-      return h('div', { className: 'ss-job', style: { marginTop: 14 } },
+      return h('div', { className: 'ss-job', style: { marginTop: 0 } },
         h('div', { className: 'ss-job-top' },
           h('span', { className: 'ss-tag ' + statusTone(job.status) }, jobLabel(job.status)),
-          h('span', { className: 'ss-job-stage' }, `训练 · ${job.stage || '准备中'}`),
+          h('span', { className: 'ss-job-stage' }, job.stage || '准备中'),
           h('span', { className: 'ss-job-pct' }, `${percent}%`),
           live && onCancel ? h('button', { className: 'ss-btn sm ghost', onClick: onCancel }, '取消训练') : null,
         ),
         h('div', { className: 'ss-bar' }, h('i', { style: { width: `${percent}%` } })),
         h('div', { className: 'ss-train-stats' },
           h('div', { className: 'ss-train-stat' },
-            h('span', { className: 'k' }, '训练轮次'),
+            h('span', { className: 'k' }, h(Tip, { tip: live ? '每轮更新拟合度' : '训练结束', up: true }, '训练轮次')),
             h('span', { className: 'v' }, total ? `${epoch}/${total}` : '—'),
-            h('span', { className: 'h' }, live ? '每轮更新拟合度' : '训练结束'),
           ),
           h('div', { className: 'ss-train-stat' },
-            h('span', { className: 'k' }, '预计剩余'),
+            h('span', { className: 'k' }, h(Tip, { tip: '按已完成轮次线性估算', up: true }, '预计剩余')),
             h('span', { className: 'v' }, eta),
-            h('span', { className: 'h' }, '按已完成轮次线性估算'),
           ),
           h('div', { className: 'ss-train-stat fit' },
-            h('span', { className: 'k' }, '拟合度'),
+            h('span', { className: 'k' }, h(Tip, { tip: '100 × (1 − e^(−18 / mel loss))；只看趋势，不代表绝对音质。', up: true }, '拟合度')),
             h('span', { className: 'v' }, fit),
-            h('span', { className: 'h' }, '由 mel loss 换算'),
           ),
           h('div', { className: 'ss-train-stat' },
-            h('span', { className: 'k' }, 'mel loss'),
+            h('span', { className: 'k' }, h(Tip, { tip: '越低越好', up: true }, 'mel loss')),
             h('span', { className: 'v' }, loss),
-            h('span', { className: 'h' }, '越低越好'),
           ),
         ),
-        h(FitSpark, { history: detail.history || [] }),
         job.message ? h('div', { className: 'ss-job-msg', style: { marginTop: 8 } }, job.message) : null,
-        h('div', { className: 'ss-help', style: { marginTop: 8 } },
-          '拟合度 = 100 × (1 − e^(−18 / mel loss))，只用来观察训练趋势，不代表绝对音质；切换到其他面板不会中断训练。',
-        ),
         job.status === 'error' && job.error ? h('div', { className: 'ss-warn', style: { marginTop: 8 } }, job.error) : null,
       )
     }
@@ -813,8 +790,9 @@ window.__ModuleLoader__.load({
       },
         h('summary', null,
           h('span', { className: 'ss-settings-summary' },
-            h('span', { className: 'ss-settings-title' }, group.title),
-            h('span', { className: 'ss-settings-desc' }, group.desc),
+            h('span', { className: 'ss-settings-title' }, group.tip
+              ? h(Tip, { tip: group.tip, side: true, plain: true }, group.title)
+              : group.title),
           ),
           h('span', { className: 'ss-settings-chevron' }, h(NavIcon, { d: ICON.chevron, size: 14 })),
         ),
@@ -1298,7 +1276,7 @@ window.__ModuleLoader__.load({
           h('h3', null, '这一页出错了'),
           h('p', null, String((this.state.error && this.state.error.message) || this.state.error)),
           h('div', { className: 'ss-empty-actions' },
-            h('button', { className: 'ss-btn primary', onClick: () => this.props.onHome && this.props.onHome() }, '回到概览'),
+            h('button', { className: 'ss-btn primary', onClick: () => this.props.onHome && this.props.onHome() }, '回到歌曲库'),
             h('button', { className: 'ss-btn ghost', onClick: () => this.setState({ error: null }) }, '再试一次'),
           ),
         )
@@ -1307,12 +1285,11 @@ window.__ModuleLoader__.load({
 
     function SettingsPanel({
       state, draft, setDraft, onSaved, toast,
-      groups = SETTING_GROUPS, title = '插件设置', desc = '路径和参数；保存后会自动检查环境。', showChecks = true, inline = false,
+      groups = SETTING_GROUPS, title = '插件设置', tip = '', inline = false, openFirst = 2,
     }) {
       const [saving, setSaving] = useState(false)
       if (!state) return h(Card, { title, icon: ICON.settings }, h('div', { className: 'ss-note' }, '正在读取设置…'))
       const s = state.settings
-      const checks = s.checks || {}
       const d = draft || s
       const dirty = Boolean(draft) && JSON.stringify(draft) !== JSON.stringify(s)
       const set = (k, v) => setDraft({ ...d, [k]: v })
@@ -1366,40 +1343,30 @@ window.__ModuleLoader__.load({
           )
         }
         return h('div', { key, className: 'ss-field' + (spec.wide ? ' wide' : '') },
-          h('label', null, label),
+          h('label', null, spec.tip ? h(Tip, { tip: spec.tip, up: true }, label) : label),
           input,
         )
       }
-      const checkTags = [
-        ['python', checks.python, 'Python'],
-        ['rvc', checks.rvc, 'RVC'],
-        ['models', checks.models, '模型目录'],
-        ['separator', checks.separator && checks.separatorModels, '分离器'],
-        ['soulx', checks.soulx, 'SoulX'],
-      ]
       return h(React.Fragment, null,
         h(Card, {
           title,
           icon: ICON.settings,
-          desc,
-          right: showChecks ? h('div', { className: 'ss-check' },
-            checkTags.map(([id, ok, text]) => h('span', { key: id, className: 'ss-tag ' + (ok ? 'good' : 'warn') }, ok ? `${text} OK` : `${text} 缺失`)),
-          ) : null,
+          tip,
           className: 'ss-settings',
         },
           h('div', { className: 'ss-settings-sections' },
-            groups.map((g, i) => h(SettingsGroup, { key: g.id, group: g, defaultOpen: i < 2 || g.id === 'netease' },
+            groups.map((g, i) => h(SettingsGroup, { key: g.id, group: g, defaultOpen: i < openFirst || g.id === 'netease' },
               g.items.map((spec) => field(spec)),
             )),
           ),
         ),
-        h('div', { className: 'ss-savebar' + (inline ? ' inline' : '') },
-          h('div', { className: 'ss-savebar-text' + (dirty ? ' dirty' : '') }, dirty ? '有未保存的改动' : '设置已同步'),
+        dirty ? h('div', { className: 'ss-savebar' + (inline ? ' inline' : '') },
+          h('div', { className: 'ss-savebar-text dirty' }, '有未保存的改动'),
           h('div', { className: 'ss-savebar-actions' },
             h('button', { className: 'ss-btn ghost', disabled: !dirty || saving, onClick: () => setDraft(null) }, '撤销'),
             h('button', { className: 'ss-btn primary', disabled: !dirty || saving, onClick: save }, saving ? '保存中…' : '保存设置'),
           ),
-        ),
+        ) : null,
       )
     }
 
@@ -1409,7 +1376,10 @@ window.__ModuleLoader__.load({
       const [initialWorkspace] = useState(readWorkspace)
       const initialSavedPage = useRef(readSavedPage())
       const [page, setPage] = useState(initialSavedPage.current.page)
-      const [studioView, setStudioView] = useState(initialSavedPage.current.view || initialWorkspace?.studioView || 'songs')
+      const [studioView, setStudioView] = useState(() => {
+        const view = initialSavedPage.current.view || initialWorkspace?.studioView || 'songs'
+        return view === 'plans' ? 'timeline' : view
+      })
       const pageRef = useRef(page)
       const pageElRef = useRef(null)
       const restoredPlans = initialWorkspace
@@ -1431,6 +1401,8 @@ window.__ModuleLoader__.load({
       const [plans, setPlans] = useState(restoredPlans)
       const [selectedId, setSelectedId] = useState(restoredSelectedId)
       const [job, setJob] = useState(null)
+      // 制作台自己的任务（分析 / 生成），和训练、环境安装的任务分开。
+      const [studioJob, setStudioJob] = useState(null)
       const [audioUrl, setAudioUrl] = useState('')
       // 当前分析已经缓存的翻唱成品（每个八度方案一份），点「翻唱」可以切换播放。
       const [renders, setRenders] = useState([])
@@ -1456,6 +1428,14 @@ window.__ModuleLoader__.load({
         return draft && typeof draft === 'object' && !Array.isArray(draft) ? draft : null
       })
       const [searchQuery, setSearchQuery] = useState(() => initialWorkspace?.searchQuery || '')
+      const [coverQuery, setCoverQuery] = useState('')
+      const [coverSort, setCoverSort] = useState('desc')
+      const [coverPage, setCoverPage] = useState(1)
+      const [soulxPromptPath, setSoulxPromptPath] = useState('')
+      const [soulxLabel, setSoulxLabel] = useState('')
+      const [soulxCreating, setSoulxCreating] = useState(false)
+      const [soulxResult, setSoulxResult] = useState(null)
+      const [soulxSaving, setSoulxSaving] = useState(false)
       const [searchResults, setSearchResults] = useState(() =>
         (Array.isArray(initialWorkspace?.searchResults) ? initialWorkspace.searchResults : null))
       const [searching, setSearching] = useState(false)
@@ -1463,10 +1443,24 @@ window.__ModuleLoader__.load({
       const [searchMsg, setSearchMsg] = useState('')
       // 训练页：表单、目录检查结果、最近一次训练结果。
       const [trainForm, setTrainForm] = useState(() => trainFormOf(initialWorkspace?.trainForm))
+      // 训练页顶部只展示一种音色来源，避免三套表单同时铺开。
+      const [trainMode, setTrainMode] = useState('train')
       const [trainCheck, setTrainCheck] = useState(null)
       const [trainChecking, setTrainChecking] = useState(false)
       const [trainResult, setTrainResult] = useState(() => initialWorkspace?.trainResult || null)
       const [trainMsg, setTrainMsg] = useState('')
+      // 同名训练：先确认是否清除旧目录 / 权重 / Profile，再带 overwrite 重新提交。
+      const [trainConflict, setTrainConflict] = useState(null)
+      const [trainConfirming, setTrainConfirming] = useState(false)
+      // assets/weights 里历史导出的可试听模型。
+      const [trainHistory, setTrainHistory] = useState(null)
+      // 训练页的模型库：外部模型路径校验 / 导入。
+      const [modelPath, setModelPath] = useState('')
+      const [modelProfilePath, setModelProfilePath] = useState('')
+      const [modelInspect, setModelInspect] = useState(null)
+      const [modelInspecting, setModelInspecting] = useState(false)
+      const [modelImporting, setModelImporting] = useState(false)
+      const [modelProfiling, setModelProfiling] = useState(false)
       // 制作台：歌曲库、生成队列。
       const [library, setLibrary] = useState([])
       const [libraryLoading, setLibraryLoading] = useState(false)
@@ -1540,6 +1534,7 @@ window.__ModuleLoader__.load({
         trainResult,
         studioView,
         jobId: job && (job.status === 'queued' || job.status === 'running') ? job.id : '',
+        studioJobId: studioJob && (studioJob.status === 'queued' || studioJob.status === 'running') ? studioJob.id : '',
         playhead: Number(playhead) || 0,
       }
       const flushWorkspace = useCallback(() => {
@@ -1552,7 +1547,7 @@ window.__ModuleLoader__.load({
       useEffect(() => { flushWorkspace() }, [
         flushWorkspace, songId, voiceId, backend, analysisId, selectedId, renderId,
         audioUrl, audioSource, plans, settingsDraft, searchQuery, searchResults,
-        trainForm, trainResult, studioView, job?.id, job?.status,
+        trainForm, trainResult, studioView, job?.id, job?.status, studioJob?.id, studioJob?.status,
       ])
       useEffect(() => {
         const timer = setInterval(flushWorkspace, 3000)
@@ -1572,10 +1567,56 @@ window.__ModuleLoader__.load({
         try { localStorage.setItem(PAGE_KEY, id) } catch {}
       }, [])
 
+      useEffect(() => {
+        if (page !== 'train') return undefined
+        let alive = true
+        get('/train/models').then((r) => {
+          if (alive && r && r.ok) setTrainHistory(r.items || [])
+        })
+        return () => { alive = false }
+      }, [page, job?.id, job?.status])
+
       const goStudio = useCallback((view) => {
-        if (view) setStudioView(view)
+        const target = view === 'plans' ? 'timeline' : view
+        if (target) setStudioView(target)
         go('studio')
+        if (view === 'plans') {
+          requestAnimationFrame(() => {
+            const node = document.getElementById('ss-plans')
+            if (node) node.scrollIntoView({ behavior: 'smooth', block: 'start' })
+          })
+        }
       }, [go])
+
+      const openSoulxPrompt = useCallback(() => {
+        setTrainMode('soulx')
+        go('train')
+        setTimeout(() => {
+          const el = document.getElementById('ss-soulx-prompt')
+          try { el?.scrollIntoView({ behavior: 'smooth', block: 'center' }) } catch {}
+          try { el?.focus({ preventScroll: true }) } catch {}
+        }, 120)
+      }, [go])
+
+      const createSoulxVoiceAction = async () => {
+        if (soulxCreating) return
+        const prompt = String(soulxPromptPath || '').trim() || String(state?.settings?.soulxPromptWav || '').trim()
+        if (!prompt) { notify('先填参考音频路径', 'bad'); return }
+        setSoulxCreating(true)
+        const r = await post('/soulx/voices', {
+          promptWav: prompt,
+          label: String(soulxLabel || '').trim() || undefined,
+        })
+        setSoulxCreating(false)
+        if (!r.ok) { notify(r.message || '创建 SoulX 音色失败', 'bad'); return }
+        setSoulxResult(r)
+        setVoiceId(r.voiceId)
+        setBackend('soulx')
+        setSoulxPromptPath('')
+        setSoulxLabel('')
+        notify(`已创建 SoulX 音色：${r.profile?.label || r.voiceId}`, 'good')
+        await loadState()
+      }
 
       const notify = useCallback((text, kind = '') => {
         setToast({ text, kind })
@@ -1645,8 +1686,28 @@ window.__ModuleLoader__.load({
         const r = await get('/state')
         if (!r.ok) { notify(r.message || '读取插件状态失败', 'bad'); return }
         setState(r)
+        // 离开插件再回来时 warmups 内存状态会丢；根据常驻 Worker 恢复 100% 状态。
+        setWarmups((cur) => {
+          let next = cur
+          for (const key of ['rvc', 'soulx']) {
+            const worker = r.workers?.[key]
+            const item = cur[key]
+            if (worker?.started) {
+              if (item && (item.status === 'loading' || item.status === 'cancelling')) continue
+              if (next === cur) next = { ...cur }
+              next[key] = { status: 'done', progress: 1, device: worker.device || '', model: worker.model || '' }
+            } else if (item?.status === 'done') {
+              if (next === cur) next = { ...cur }
+              next[key] = null
+            }
+          }
+          return next
+        })
         setSongId((cur) => cur || r.songs?.[0]?.id || '')
-        setVoiceId((cur) => cur || r.voices?.find((v) => v.calibrated)?.id || '')
+        const firstRvc = r.voices?.find((v) => v.usable && v.kind !== 'soulx')
+        const firstSoulx = r.voices?.find((v) => v.usable && v.kind === 'soulx')
+        setVoiceId((cur) => cur || firstRvc?.id || firstSoulx?.id || '')
+        if (!firstRvc && firstSoulx) setBackend((cur) => (cur === 'rvc' ? 'soulx' : cur))
       }, [notify])
 
       useEffect(() => { loadState() }, [loadState])
@@ -1752,14 +1813,14 @@ window.__ModuleLoader__.load({
         if (el) el.scrollTop = 0
       }, [page])
 
-      // 试听条只在制作台显示：离开制作台时暂停播放（保留进度），避免在其他页面还在响。
+      // 试听条只在「音高时间轴」显示：离开时间轴就暂停（保留进度）。
       useEffect(() => {
-        if (page === 'studio') return
+        if (page === 'studio' && studioView === 'timeline') return
         wantPlayRef.current = false
         pendingSeekRef.current = null
         try { audioRef.current?.pause() } catch {}
         setIsPlaying(false)
-      }, [page])
+      }, [page, studioView])
 
       useEffect(() => {
         setActivePhrase(-1)
@@ -1838,6 +1899,7 @@ window.__ModuleLoader__.load({
       }, [])
 
       const jobBusy = Boolean(job && (job.status === 'queued' || job.status === 'running'))
+      const studioBusy = Boolean(studioJob && (studioJob.status === 'queued' || studioJob.status === 'running'))
       const soulxReady = Boolean(state?.settings?.checks?.soulx)
       const envReady = Boolean(state?.deps?.ready)
       const deps = state?.deps || { items: [], missing: [] }
@@ -1877,9 +1939,14 @@ window.__ModuleLoader__.load({
         }, 400)
         return () => clearInterval(timer)
       }, [warmupBusy])
-      const song = state?.songs?.find((s) => s.id === songId)
       const voice = state?.voices?.find((v) => v.id === voiceId)
-      const promptReady = Boolean(voice?.profile?.promptWav)
+      const voicePromptWav = String(voice?.profile?.promptWav || '').trim()
+      const defaultPromptWav = String(state?.settings?.soulxPromptWav || '').trim()
+      const promptReady = Boolean(voicePromptWav || defaultPromptWav)
+      const voiceCompatible = !voice || voice.kind !== 'soulx' || backend === 'soulx'
+      const voicePath = voice?.kind === 'soulx'
+        ? (voice.promptWav || voice.profile?.promptWav || defaultPromptWav || '')
+        : (voice?.file || '')
       const profile = analysis?.profile || voice?.profile || null
       const selected = plans?.table?.find((r) => r.id === selectedId) || plans?.selected || null
       const songs = state?.songs || []
@@ -2014,7 +2081,7 @@ window.__ModuleLoader__.load({
           setSelectedId('')
           setAudioUrl('')
           setPlayhead(0)
-          setJob(null)
+          setStudioJob(null)
           notify('分析完成，去时间轴看看')
           loadLibrary()
           if (pageRef.current === 'studio') goStudio('timeline')
@@ -2037,7 +2104,8 @@ window.__ModuleLoader__.load({
           }
           notify(result?.voiceId ? `训练完成：${result.label || result.voiceId}` : '训练完成')
           await loadState()
-          go('train')
+          // 用户可能正在制作台用别的音色干活，不强行把人拉回训练页。
+          if (pageRef.current === 'train') go('train')
         }
       }, [notify, loadState, go, loadRenders])
 
@@ -2045,18 +2113,25 @@ window.__ModuleLoader__.load({
       // 不用因为切了一下面板就重新点一遍。
       useEffect(() => {
         const ws = initialWorkspace
-        if (!ws || !ws.jobId) return undefined
+        const ids = [ws?.jobId, ws?.studioJobId].filter(Boolean)
+        if (!ids.length) return undefined
         let alive = true
-        get(`/jobs/${ws.jobId}`).then((r) => {
-          if (!alive || !r.ok) return
-          const j = r.job
-          if (j.status === 'queued' || j.status === 'running') setJob(j)
+        const apply = (j) => {
+          // 生成任务交给队列轮询处理，这里只恢复训练 / 安装 / 分析。
+          if (j.type === 'render') return
+          const set = j.type === 'analyze' ? setStudioJob : setJob
+          if (j.status === 'queued' || j.status === 'running') set(j)
           else if (j.status === 'done') onJobDone(j)
           else if (j.status === 'error') {
-            setJob(j)
+            set(j)
             notify(j.error || '任务失败', 'bad')
           }
-        }).catch(() => {})
+        }
+        for (const id of ids) {
+          get(`/jobs/${id}`).then((r) => {
+            if (alive && r.ok) apply(r.job)
+          }).catch(() => {})
+        }
         return () => { alive = false }
       }, [])
 
@@ -2075,8 +2150,23 @@ window.__ModuleLoader__.load({
         return () => { stopped = true; clearInterval(timer) }
       }, [job?.id, job?.status, onJobDone, notify])
 
+      useEffect(() => {
+        if (!studioJob || (studioJob.status !== 'queued' && studioJob.status !== 'running')) return undefined
+        let stopped = false
+        const tick = async () => {
+          const r = await get(`/jobs/${studioJob.id}`)
+          if (stopped || !r.ok) return
+          setStudioJob(r.job)
+          if (r.job.status === 'done') onJobDone(r.job)
+          else if (r.job.status === 'error') notify(r.job.error || '任务失败', 'bad')
+        }
+        tick()
+        const timer = setInterval(tick, 700)
+        return () => { stopped = true; clearInterval(timer) }
+      }, [studioJob?.id, studioJob?.status, onJobDone, notify])
+
       // 从歌曲库选一首歌：换歌时清掉上一首的分析 / 方案 / 成品引用。
-      const pickSong = (id) => {
+      const pickSong = (id, options = {}) => {
         // 同一个音色分析过的歌直接复用分析结果；没翻唱 / 换音色的才需要重新分析 F0。
         const entry = library.find((s) => s.id === id) || null
         const hit = entry?.analyses?.find((a) => a.voiceId === voiceId) || null
@@ -2093,7 +2183,8 @@ window.__ModuleLoader__.load({
           setAnalysisId(hit.id)
         }
         setSongId(id)
-        goStudio('songs')
+        // 时间轴顶部的下拉只切歌，不跳回歌曲库。
+        if (!options.stay) goStudio('songs')
       }
 
       const upload = async (file) => {
@@ -2132,20 +2223,20 @@ window.__ModuleLoader__.load({
             setAnalysis(a.analysis)
             setAnalysisId(r.analysisId)
             setPlans(null)
-            setJob(null)
+            setStudioJob(null)
             notify('使用缓存的分析结果')
             loadLibrary()
             goStudio('timeline')
           } else notify(a.message || '读取分析失败', 'bad')
           return
         }
-        setJob(r.job)
-        goStudio('songs')
+        setStudioJob(r.job)
+        goStudio('timeline')
       }
 
       const plan = async () => {
         if (!envReady) { notify('环境未准备：请先在「环境」页完成依赖检查/下载', 'bad'); go('env'); return }
-        if (!analysisId) { notify('先分析 F0', 'bad'); goStudio('songs'); return }
+        if (!analysisId) { notify('先分析 F0', 'bad'); goStudio('timeline'); return }
         const r = await post('/plan', { analysisId, voiceId })
         if (!r.ok) { notify(r.message || '规划失败', 'bad'); return }
         setPlans(r)
@@ -2187,18 +2278,23 @@ window.__ModuleLoader__.load({
         if (r.reused && r.job) {
           mergeRenderJob(r.job)
           notify('相同方案正在生成，已显示在队列里')
-          goStudio('songs')
+          goStudio('timeline')
           return
         }
         if (!r.job) { notify('没有拿到生成任务', 'bad'); return }
         mergeRenderJob(r.job)
         notify('已加入生成队列')
-        goStudio('songs')
+        goStudio('timeline')
       }
 
       const cancel = async () => {
         if (!job) return
         await post(`/cancel/${job.id}`)
+      }
+
+      const cancelStudio = async () => {
+        if (!studioJob) return
+        await post(`/cancel/${studioJob.id}`)
       }
 
       const cancelRenderJob = async (id) => {
@@ -2270,7 +2366,9 @@ window.__ModuleLoader__.load({
         }
       }
 
-      const startTraining = async () => {
+      const startTraining = async (options = {}) => {
+        const overwrite = options?.overwrite === true
+        const resume = options?.resume === true
         const form = trainForm
         if (!state?.training?.ok) {
           notify('训练环境还没准备好，先去「环境」页一键准备', 'bad')
@@ -2279,12 +2377,134 @@ window.__ModuleLoader__.load({
         }
         if (!String(form.datasetPath || '').trim()) { notify('先填训练数据目录', 'bad'); return }
         if (!String(form.name || '').trim()) { notify('先填模型名（字母/数字/下划线）', 'bad'); return }
-        const r = await post('/train', { ...form, label: form.label || form.name })
-        if (!r.ok) { notify(r.message || '无法开始训练', 'bad'); return }
+        const r = await post('/train', { ...form, label: form.label || form.name, overwrite, resume })
+        if (!r.ok) {
+          if (r.code === 'train-exists') {
+            setTrainConflict({ kind: 'exists', conflicts: r.conflicts || [], form: { ...form } })
+            return
+          }
+          if (r.code === 'train-resumable') {
+            setTrainConflict({ kind: 'resume', resumable: r.resumable || null, form: { ...form } })
+            return
+          }
+          notify(r.message || '无法开始训练', 'bad')
+          return
+        }
+        setTrainConflict(null)
         setTrainResult(null)
         setTrainMsg('')
         setJob(r.job)
+        setTrainMode('train')
         go('train')
+      }
+
+      const checkModelPath = async (rawPath, rawProfilePath) => {
+        const path = String(rawPath ?? modelPath ?? '').trim()
+        if (!path) { notify('先填模型路径', 'bad'); return }
+        setModelInspecting(true)
+        const r = await post('/models/inspect', {
+          path,
+          profilePath: String(rawProfilePath ?? modelProfilePath ?? '').trim() || undefined,
+        })
+        setModelInspecting(false)
+        if (!r.ok || !r.inspection) { setModelInspect(null); notify(r.message || '校验失败', 'bad'); return }
+        const ins = r.inspection
+        setModelInspect(ins)
+        if (ins.ok) notify('模型格式与 Profile 校验通过', 'good')
+        else if (ins.model?.format?.ok) notify('模型格式正常；Profile 还需要补全', 'bad')
+        else notify('模型文件格式未通过', 'bad')
+      }
+
+      const saveSoulxSettings = async () => {
+        if (!settingsDraft || soulxSaving) return
+        setSoulxSaving(true)
+        const r = await post('/settings', settingsDraft)
+        setSoulxSaving(false)
+        if (!r.ok) { notify(r.message || '保存 SoulX 参数失败', 'bad'); return }
+        setSettingsDraft(null)
+        notify('SoulX 参数已保存', 'good')
+        await loadState()
+      }
+
+      const profileCheckedModel = async () => {
+        if (modelProfiling) return
+        const target = String(modelPath || '').trim()
+        const dataset = String(trainForm.datasetPath || '').trim()
+        if (!target) { notify('先填已有模型权重路径', 'bad'); return }
+        if (!dataset) { notify('先填训练数据路径', 'bad'); return }
+        setModelProfiling(true)
+        const r = await post('/models/profile', {
+          modelPath: target,
+          datasetPath: dataset,
+          label: String(trainForm.label || '').trim() || undefined,
+        })
+        setModelProfiling(false)
+        if (!r.ok) {
+          if (r.inspection) setModelInspect(r.inspection)
+          notify(r.message || '生成 Profile 失败', 'bad')
+          return
+        }
+        if (r.inspection) setModelInspect(r.inspection)
+        setVoiceId(r.voiceId)
+        notify(r.imported ? `已生成 Profile 并加入模型库：${r.voiceId}` : `已更新 Profile：${r.voiceId}`, 'good')
+        await loadState()
+      }
+
+      const importCheckedModel = async () => {
+        if (!modelInspect?.ok || modelImporting) return
+        setModelImporting(true)
+        const r = await post('/models/import', {
+          path: String(modelPath || '').trim(),
+          profilePath: String(modelProfilePath || '').trim() || undefined,
+        })
+        setModelImporting(false)
+        if (!r.ok) {
+          if (r.inspection) setModelInspect(r.inspection)
+          notify(r.message || '加入模型库失败', 'bad')
+          return
+        }
+        setVoiceId(r.voiceId)
+        notify(`已加入模型库：${r.voiceId}`, 'good')
+        await loadState()
+        if (r.inspection) setModelInspect(r.inspection)
+      }
+
+      const confirmResumeTraining = async () => {
+        const pending = trainConflict
+        if (!pending || trainConfirming) return
+        setTrainConfirming(true)
+        try {
+          const form = pending.form
+          const r = await post('/train', { ...form, label: form.label || form.name, resume: true })
+          if (!r.ok) { notify(r.message || '无法继续训练', 'bad'); return }
+          setTrainConflict(null)
+          setTrainResult(null)
+          setTrainMsg('')
+          setJob(r.job)
+          setTrainMode('train')
+          go('train')
+        } finally {
+          setTrainConfirming(false)
+        }
+      }
+
+      const confirmOverwriteTraining = async () => {
+        const pending = trainConflict
+        if (!pending || trainConfirming) return
+        setTrainConfirming(true)
+        try {
+          const form = pending.form
+          const r = await post('/train', { ...form, label: form.label || form.name, overwrite: true })
+          if (!r.ok) { notify(r.message || '无法开始训练', 'bad'); return }
+          setTrainConflict(null)
+          setTrainResult(null)
+          setTrainMsg('')
+          setJob(r.job)
+          setTrainMode('train')
+          go('train')
+        } finally {
+          setTrainConfirming(false)
+        }
       }
 
       const setWarmupFor = (backend, value) => {
@@ -2872,145 +3092,45 @@ window.__ModuleLoader__.load({
         }
       }, [envReady, state?.settings?.autoWarmup, voiceId])
 
-      const navHint = (id) => {
+      const settingsDirty = Boolean(settingsDraft && state)
+        && JSON.stringify(settingsDraft) !== JSON.stringify(state.settings)
+      const navStatus = (id) => {
         if (id === 'env') {
-          if (!state) return '检查中…'
-          if (!envReady) return job && job.type === 'setup' && jobBusy ? `安装中 ${Math.round((job.progress || 0) * 100)}%` : `还缺 ${deps.missing?.length || 0} 项`
-          return '环境已就绪'
+          if (!state) return { tone: '', text: '检查中…' }
+          if (job && job.type === 'setup' && jobBusy) return { tone: 'warn', text: `安装中 ${Math.round((job.progress || 0) * 100)}%` }
+          if (!envReady) return { tone: 'bad', text: `还缺 ${deps.missing?.length || 0} 项` }
+          return { tone: 'ok', text: '就绪' }
         }
-        if (id === 'train') return job && job.type === 'train' && jobBusy
-          ? `训练中 ${Math.round((job.progress || 0) * 100)}%`
-          : (trainResult ? `已完成 ${trainResult.label || trainResult.voiceId || ''}` : '训练音色模型')
+        if (id === 'train') {
+          if (job && job.type === 'train' && jobBusy) return { tone: 'warn', text: `训练中 ${Math.round((job.progress || 0) * 100)}%` }
+          if (state?.training && !state.training.ok) return { tone: 'warn', text: '环境未就绪' }
+          return { tone: '', text: '' }
+        }
         if (id === 'studio') {
           const running = renderJobs.filter((j) => j.status === 'running' || j.status === 'queued').length
-          if (running) return `队列 ${running} 个任务`
-          return song ? song.name : '歌曲、翻唱与队列'
+          if (running) return { tone: 'warn', text: `队列 ${running}` }
+          if (studioBusy) return { tone: 'warn', text: `处理中 ${Math.round((studioJob.progress || 0) * 100)}%` }
+          return { tone: '', text: '' }
         }
-        if (id === 'settings') return settingsDraft && state ? '有未保存的改动' : '通用设置'
-        return ''
-      }
-
-      const openWorkspace = () => {
-        if (!songId) { goStudio('songs'); return }
-        if (!analysis) { goStudio('songs'); return }
-        if (!selected) { goStudio('plans'); return }
-        if (!audioUrl) { goStudio('songs'); return }
-        goStudio('timeline')
-      }
-
-      const flowStep = (num, title, meta, done, onClick) => h('button', {
-        key: num, type: 'button', className: 'ss-flow-row' + (done ? ' done' : ''), onClick,
-      },
-        h('span', { className: 'ss-flow-num' }, done ? h(NavIcon, { d: ICON.check, size: 14 }) : String(num)),
-        h('span', { className: 'ss-flow-main' },
-          h('span', { className: 'ss-flow-name' }, title),
-          h('span', { className: 'ss-flow-meta' }, meta),
-        ),
-        h('span', { className: 'ss-flow-arrow' }, h(NavIcon, { d: ICON.arrow, size: 14 })),
-      )
-
-      const renderOverview = () => {
-        const next = !songId
-          ? {
-            title: '先添加一首歌',
-            desc: '上传整首歌，自动分出人声和伴奏。',
-            cta: '去制作', run: () => goStudio('songs'),
-          }
-          : !analysis
-            ? {
-              title: '歌曲已就位，下一步分析 F0',
-              desc: '先提取音高，再对照音色音域。',
-              cta: envReady ? '开始分析' : '去准备环境',
-              run: envReady ? analyze : () => go('env'),
-              disabled: jobBusy || !voiceId,
-            }
-            : !selected
-              ? {
-                title: '分析完成，挑一个八度方案',
-                desc: '自动比较几种八度策略，挑覆盖最好的。',
-                cta: envReady ? '生成方案' : '去准备环境',
-                run: envReady ? plan : () => go('env'),
-                disabled: jobBusy,
-              }
-              : !audioUrl
-                ? {
-                  title: '方案已选好，生成成品',
-                  desc: `${selected.label} · 舒适覆盖 ${pct(selected.coverage.comfort)}。只改人声。`,
-                  cta: envReady ? '生成歌曲' : '去准备环境',
-                  run: envReady ? render : () => go('env'),
-                  disabled: jobBusy || (envReady && backend === 'soulx' && (!soulxReady || !promptReady)),
-                }
-                : {
-                  title: '成品已生成，来试听',
-                  desc: '点乐句可以只听那一句。',
-                  cta: '去试听', run: () => goStudio('timeline'),
-                }
-        return h(React.Fragment, null,
-          h('div', { className: 'ss-banner' },
-            h('span', { className: 'ss-banner-mark' }, h(NavIcon, { d: next.cta === '去试听' ? ICON.speaker : ICON.spark, size: 18 })),
-            h('div', { className: 'ss-banner-body' },
-              h('div', { className: 'ss-banner-title' }, next.title),
-              h('div', { className: 'ss-banner-desc' }, next.desc),
-            ),
-            h('button', { className: 'ss-btn primary', onClick: next.run, disabled: next.disabled }, next.cta),
-          ),
-          h('div', { className: 'ss-metrics' },
-            h(Metric, {
-              label: '原曲舒适区覆盖',
-              value: analysis ? pct(analysis.coverage?.comfort) : '—',
-              hint: analysis ? `极限区 ${pct(analysis.coverage?.hard)}` : '分析后显示',
-            }),
-            h(Metric, {
-              label: '当前方案覆盖',
-              value: selected ? pct(selected.coverage.comfort) : '—',
-              hint: selected ? `极限区 ${pct(selected.coverage.hard)} · 变调 ${selected.changes} 次` : '规划后显示',
-            }),
-            h(Metric, {
-              label: '音色舒适区',
-              value: profile ? `${noteName(profile.p5)} – ${noteName(profile.p95)}` : '—',
-              hint: profile ? `${Math.round(profile.p5)}–${Math.round(profile.p95)} Hz` : '选择音色后显示',
-            }),
-            h(Metric, {
-              label: '分段 / 乐句',
-              value: analysis ? `${analysis.sections?.length || 0} / ${analysis.phrases?.length || 0}` : '—',
-              hint: plans?.candidates?.length
-                ? `候选八度 ${plans.candidates.map((c) => (c.semitones > 0 ? `+${c.semitones}` : c.semitones)).join(' / ')}`
-                : '候选八度待规划',
-            }),
-          ),
-          h('div', { className: 'ss-grid ss-overview-grid' },
-            h(Card, { title: '制作进度', icon: ICON.overview },
-              h('div', { className: 'ss-flow' },
-                flowStep(1, '选择歌曲与音色', song ? `${song.name} · ${fmtTime(song.duration)}` : '还没有选择歌曲', Boolean(songId && voiceId), () => goStudio('songs')),
-                flowStep(2, '分析人声 F0', analysis ? `${analysis.sections?.length || 0} 段 · ${analysis.phrases?.length || 0} 乐句` : envReady ? '点「分析 F0」开始' : '环境未准备', Boolean(analysis), () => (analysis ? goStudio('timeline') : goStudio('songs'))),
-                flowStep(3, '生成八度方案', selected ? `${selected.label} · ${pct(selected.coverage.comfort)}` : '还没有规划', Boolean(selected), () => (selected ? goStudio('plans') : goStudio('songs'))),
-                flowStep(4, '生成并试听', audioUrl ? '成品已生成' : '渲染整首翻唱', Boolean(audioUrl), () => (audioUrl ? goStudio('timeline') : goStudio('songs'))),
-              ),
-              h('div', { style: { display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 12 } },
-                h('button', { className: 'ss-btn primary', onClick: openWorkspace }, !analysis ? '继续制作' : !selected ? '去规划' : !audioUrl ? '去生成' : '去试听'),
-                h('button', { className: 'ss-btn ghost', onClick: () => go('settings') }, '打开设置'),
-              ),
-            ),
-            h(Card, { title: '最近任务', icon: ICON.clock, right: h('span', { className: 'ss-tag' }, `${state?.jobs?.length || 0} 条`) },
-              h('div', { className: 'ss-history' },
-                (state?.jobs || []).slice(0, 6).map((j) => h('div', { key: j.id, className: 'ss-history-row' },
-                  h('span', { className: 'ss-history-main' },
-                    h('span', { className: 'ss-history-name' }, `${jobType(j.type)} · ${j.stage || j.status}`),
-                    h('span', { className: 'ss-history-meta' }, fmtAgo(j.createdAt)),
-                  ),
-                  h('span', { className: 'ss-tag ' + statusTone(j.status) }, jobLabel(j.status)),
-                )),
-                !(state?.jobs || []).length ? h('div', { className: 'ss-note' }, '还没有任务。') : null,
-              ),
-              h('div', { className: 'ss-note', style: { marginTop: 10 } }, '切页不会中断后台任务。'),
-            ),
-          ),
-        )
+        if (id === 'settings') return settingsDirty ? { tone: 'warn', text: '未保存' } : { tone: '', text: '' }
+        return { tone: '', text: '' }
       }
 
       const renderStudio = () => {
-        const libSong = library.find((s) => s.id === songId) || null
-        const songCovers = libSong?.renders || []
+        const normSongName = (value) => String(value || '').toLowerCase().replace(/\s+/g, '')
+        const labelOfResult = (r) => [r.name, r.artists].filter(Boolean).join(' - ')
+        const findDownloaded = (r) => {
+          const songs = library || []
+          // 新导入的歌直接按网易云 id 匹配；老歌曲没有 id，用「歌名 - 歌手」兜底。
+          const byId = songs.find((song) => song.neteaseId && String(song.neteaseId) === String(r.id))
+          if (byId) return byId
+          const wanted = normSongName(labelOfResult(r))
+          return songs.find((song) => normSongName(song.name) === wanted)
+        }
+        // 歌曲库页的「已翻唱的版本」列出所有歌的成品，每行带上歌名。
+        const allCovers = (library || [])
+          .flatMap((s) => (s.renders || []).map((r) => ({ ...r, songName: s.name, songId: s.id })))
+          .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))
         const activeRenderJobs = renderJobs
           .filter((j) => j.status === 'queued' || j.status === 'running')
           .sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0))
@@ -3021,7 +3141,7 @@ window.__ModuleLoader__.load({
         const queueCard = queueRows.length ? h(Card, {
           title: '生成队列',
           icon: ICON.clock,
-          desc: '可以连续加入多个生成任务；完成一个会提醒，切页不会中断。',
+          tip: '可以连续加入多个生成任务；完成时会提醒，切页不会中断。',
           right: h('span', { className: 'ss-tag' }, `${activeRenderJobs.length} 个进行中 / 排队`),
         },
           queueRows.map((j) => h('div', { key: j.id, className: 'ss-queue-row' },
@@ -3041,7 +3161,7 @@ window.__ModuleLoader__.load({
         const libraryCard = h(Card, {
           title: '歌曲库',
           icon: ICON.studio,
-          desc: '已下载的歌曲；点一首歌继续分析或生成。',
+          tip: '点一首歌继续分析或生成。',
           right: h('div', { style: { display: 'flex', gap: 8, flexWrap: 'wrap' } },
             h('button', { className: 'ss-btn sm ghost', onClick: () => loadLibrary(), disabled: libraryLoading }, libraryLoading ? '刷新中…' : '刷新'),
             h('button', { className: 'ss-btn sm', onClick: () => fileRef.current?.click(), disabled: uploading }, uploading ? '上传中…' : '上传新歌'),
@@ -3060,44 +3180,95 @@ window.__ModuleLoader__.load({
                 s.latestCover ? h('span', { className: 'ss-tag' }, fmtAgo(s.latestCover.createdAt)) : null,
               ),
             )))
-            : h('div', { className: 'ss-note' }, libraryLoading ? '正在读取歌曲库…' : '还没有歌曲；用下面的网易云搜索或「上传新歌」添加。'),
+            : h('div', { className: 'ss-note' }, libraryLoading ? '正在读取歌曲库…' : '还没有歌曲；上传新歌或从网易云搜索。'),
         )
+        const coverNeedle = coverQuery.trim().toLowerCase().replace(/\s+/g, '')
+        const coverMatches = (c) => {
+          if (!coverNeedle) return true
+          const text = `${c.songName || ''} ${planLevelLabel(c.level)} ${c.backend === 'soulx' ? 'SoulX' : 'RVC'}`
+            .toLowerCase().replace(/\s+/g, '')
+          return text.includes(coverNeedle)
+        }
+        const sortedCovers = allCovers.filter(coverMatches).sort((a, b) => {
+          const ta = Number(a.createdAt) || 0
+          const tb = Number(b.createdAt) || 0
+          if (ta === tb) return String(a.id).localeCompare(String(b.id))
+          return coverSort === 'asc' ? ta - tb : tb - ta
+        })
+        const coverPageCount = Math.max(1, Math.ceil(sortedCovers.length / COVERS_PER_PAGE))
+        const coverPageSafe = Math.min(Math.max(1, coverPage), coverPageCount)
+        const coverStart = (coverPageSafe - 1) * COVERS_PER_PAGE
+        const visibleCovers = sortedCovers.slice(coverStart, coverStart + COVERS_PER_PAGE)
+        const resetCoverPage = () => setCoverPage(1)
         const coversCard = h(Card, {
           title: '已翻唱的版本',
           icon: ICON.speaker,
           style: { marginTop: 14 },
-          desc: songCovers.length ? '可以直接试听 / 下载，也可以再生成一版。' : '按下面的分析 → 方案 → 生成走完，成品会出现在这里。',
-          right: libSong
-            ? h('span', { className: 'ss-tag ' + (songCovers.length ? 'good' : '') }, songCovers.length ? `${songCovers.length} 版` : '还没有翻唱')
-            : null,
+          tip: '所有歌曲的翻唱成品；支持搜索、分页，默认按生成时间从新到旧排序。',
+          right: h('span', { className: 'ss-tag ' + (allCovers.length ? 'good' : '') }, allCovers.length ? `${allCovers.length} 版` : '还没有翻唱'),
         },
-          !songId
-            ? h('div', { className: 'ss-note' }, '先在歌曲库里选一首歌。')
-            : songCovers.length
-              ? songCovers.map((c) => h('div', { key: c.id, className: 'ss-cover-row' },
-                h('div', { className: 'ss-cover-main' },
-                  h('div', { className: 'ss-cover-title' }, `${planLevelLabel(c.level)} · ${c.backend === 'soulx' ? 'SoulX' : 'RVC'}`),
-                  h('div', { className: 'ss-cover-meta' },
-                    `${fmtAgo(c.createdAt)} · 舒适覆盖 ${c.coverage?.comfort != null ? pct(c.coverage.comfort) : '—'}${c.duration ? ` · ${fmtTime(c.duration)}` : ''}`),
+          allCovers.length
+            ? h(React.Fragment, null,
+              h('div', { className: 'ss-cover-toolbar' },
+                h('input', {
+                  className: 'ss-input', type: 'search', value: coverQuery,
+                  placeholder: '搜歌名 / 方案 / 后端', 'aria-label': '搜索已翻唱版本',
+                  onChange: (e) => { setCoverQuery(e.target.value); resetCoverPage() },
+                }),
+                coverQuery ? h('button', {
+                  className: 'ss-btn sm ghost', type: 'button',
+                  onClick: () => { setCoverQuery(''); resetCoverPage() },
+                }, '清除') : null,
+                h('div', { className: 'ss-seg', title: '按生成时间排序' },
+                  h('button', {
+                    type: 'button', className: 'ss-seg-btn' + (coverSort === 'desc' ? ' on' : ''),
+                    onClick: () => { setCoverSort('desc'); resetCoverPage() },
+                  }, '最新'),
+                  h('button', {
+                    type: 'button', className: 'ss-seg-btn' + (coverSort === 'asc' ? ' on' : ''),
+                    onClick: () => { setCoverSort('asc'); resetCoverPage() },
+                  }, '最早'),
                 ),
-                h('audio', { controls: true, preload: 'none', src: c.audioUrl }),
-                h('a', { className: 'ss-btn sm ghost', href: c.audioUrl, download: 'cover.mp3' }, '下载'),
-              ))
-              : h('div', { className: 'ss-note' }, '这首歌还没有翻唱版本；按下面的步骤分析、选方案、生成。'),
+                coverNeedle ? h('span', { className: 'ss-help' }, `${sortedCovers.length} 个匹配`) : null,
+              ),
+              sortedCovers.length
+                ? h(React.Fragment, null,
+                  visibleCovers.map((c) => h('div', { key: c.id, className: 'ss-cover-row' },
+                    h('div', { className: 'ss-cover-main' },
+                      h('div', { className: 'ss-cover-title' }, c.songName || '未知歌曲'),
+                      h('div', { className: 'ss-cover-meta', title: fmtStamp(c.createdAt) },
+                        `${planLevelLabel(c.level)} · ${c.backend === 'soulx' ? 'SoulX' : 'RVC'} · ${fmtAgo(c.createdAt)} · 舒适覆盖 ${c.coverage?.comfort != null ? pct(c.coverage.comfort) : '—'}${c.duration ? ` · ${fmtTime(c.duration)}` : ''}`),
+                    ),
+                    h('audio', { controls: true, preload: 'none', src: c.audioUrl }),
+                    h('a', { className: 'ss-btn sm ghost', href: c.audioUrl, download: 'cover.mp3' }, '下载'),
+                  )),
+                  coverPageCount > 1 ? h('div', { className: 'ss-cover-pager' },
+                    h('span', { className: 'ss-help' },
+                      `第 ${coverStart + 1}–${coverStart + visibleCovers.length} 条，共 ${sortedCovers.length} 条`),
+                    h('div', { className: 'ss-pager-actions' },
+                      h('button', {
+                        type: 'button', className: 'ss-btn sm ghost', disabled: coverPageSafe <= 1,
+                        onClick: () => setCoverPage(Math.max(1, coverPageSafe - 1)),
+                      }, '上一页'),
+                      h('span', { className: 'ss-pager-num' }, `${coverPageSafe} / ${coverPageCount}`),
+                      h('button', {
+                        type: 'button', className: 'ss-btn sm ghost', disabled: coverPageSafe >= coverPageCount,
+                        onClick: () => setCoverPage(Math.min(coverPageCount, coverPageSafe + 1)),
+                      }, '下一页'),
+                    ),
+                  ) : null,
+                )
+                : h('div', { className: 'ss-note' }, '没有匹配的翻唱版本。'),
+            )
+            : h('div', { className: 'ss-note' }, '还没有翻唱版本；在「音高时间轴」生成后会出现在这里。'),
         )
         return h(React.Fragment, null,
-        h(PageIntro, {
-          icon: ICON.studio,
-          title: '制作台',
-          desc: '歌曲库与翻唱版本；没有翻唱的歌按「分析 F0 → 八度方案 → 生成」走。',
-          right: h('span', { className: 'ss-tag ' + (state ? (envReady ? 'good' : 'warn') : '') }, state ? (envReady ? '环境就绪' : '环境未准备') : '读取中…'),
-        }),
         queueCard,
         libraryCard,
         h(Card, {
           title: '从网易云找歌',
           icon: ICON.download,
-          desc: '免费歌直接下载；会员歌先在设置里填 Cookie。',
+          tip: '免费歌直接下载；会员歌需在下方设置里填 MUSIC_U Cookie。',
           right: state?.settings?.neteaseCookieSet ? h('span', { className: 'ss-tag good' }, 'Cookie 已设置') : null,
         },
           h('div', { className: 'ss-search-row' },
@@ -3114,38 +3285,572 @@ window.__ModuleLoader__.load({
           searchMsg ? h('div', { className: 'ss-note', style: { marginTop: 8, color: 'var(--dsw-alias-state-warn-primary)' } }, searchMsg) : null,
           searchResults && searchResults.length
             ? h('div', { className: 'ss-search-list' },
-              searchResults.map((r) => h('div', { key: r.id, className: 'ss-search-item' },
-                h('div', { className: 'ss-search-main' },
-                  h('div', { className: 'ss-search-title' }, r.name, r.alias ? h('span', { className: 'ss-search-alias' }, r.alias) : null),
-                  h('div', { className: 'ss-search-meta' }, `${r.artists || '未知歌手'} · ${fmtTime(r.durationSec)}`),
-                ),
-                r.vip ? h('span', { className: 'ss-tag warn' }, 'VIP') : null,
-                h('button', {
-                  className: 'ss-btn sm primary',
-                  disabled: Boolean(importingId),
-                  onClick: () => importNetease(r),
-                }, String(importingId) === String(r.id) ? '下载中…' : '下载'),
-              )),
+              searchResults.map((r) => {
+                const existing = findDownloaded(r)
+                return h('div', { key: r.id, className: 'ss-search-item' },
+                  h('div', { className: 'ss-search-main' },
+                    h('div', { className: 'ss-search-title' }, r.name, r.alias ? h('span', { className: 'ss-search-alias' }, r.alias) : null),
+                    h('div', { className: 'ss-search-meta' }, `${r.artists || '未知歌手'} · ${fmtTime(r.durationSec)}`),
+                  ),
+                  r.vip ? h('span', { className: 'ss-tag warn' }, 'VIP') : null,
+                  existing ? h('span', { className: 'ss-tag good' }, '已下载') : null,
+                  existing
+                    ? h('button', {
+                      className: 'ss-btn sm ghost',
+                      onClick: () => pickSong(existing.id),
+                    }, '打开')
+                    : h('button', {
+                      className: 'ss-btn sm primary',
+                      disabled: Boolean(importingId),
+                      onClick: () => importNetease(r),
+                    }, String(importingId) === String(r.id) ? '下载中…' : '下载'),
+                )
+              }),
             )
             : null,
         ),
-        h(Card, {
-          title: '① 选择素材',
-          icon: ICON.upload,
-          desc: '歌曲和音色决定分析结果。',
-        },
-          h('div', { className: 'ss-form-grid' },
-            h('div', { className: 'ss-field' },
+        coversCard,
+        h('div', { id: 'ss-studio-settings' },
+          h(SettingsPanel, {
+            state, draft: settingsDraft, setDraft: setSettingsDraft, onSaved: loadState, toast: notify,
+            groups: SETTING_GROUPS.filter((g) => g.page === 'studio'),
+            title: '制作台设置',
+            tip: '八度规划、F0 分析和乐句设置在「音高时间轴」页。',
+            inline: true,
+          }),
+        ),
+        )
+      }
+
+      const renderTrain = () => {
+        const f = trainForm
+        const training = state?.training || null
+        const trainJob = job && job.type === 'train' ? job : null
+        const busy = Boolean(trainJob && (trainJob.status === 'queued' || trainJob.status === 'running'))
+        const result = busy
+          ? null
+          : trainJob
+            ? (trainJob.status === 'done' ? (trainJob.result || trainResult) : null)
+            : trainResult
+        const refreshHistory = () => {
+          get('/train/models').then((r) => { if (r && r.ok) setTrainHistory(r.items || []) })
+        }
+        const bestTake = (res) => {
+          const fits = new Map()
+          for (const row of (res?.history || [])) {
+            const epoch = Number(row?.epoch)
+            const fit = Number(row?.fit)
+            if (Number.isFinite(epoch) && Number.isFinite(fit)) fits.set(epoch, fit)
+          }
+          let best = null
+          if (Number.isFinite(Number(res?.fit))) best = { epoch: 0, fit: Number(res.fit) }
+          for (const item of (res?.auditions || [])) {
+            const epoch = Number(item?.epoch)
+            const fit = fits.get(epoch)
+            if (!Number.isFinite(epoch) || !Number.isFinite(fit)) continue
+            if (!best || fit > best.fit) best = { epoch, fit }
+          }
+          return best
+        }
+
+        const useBestTake = async () => {
+          const name = result?.voiceId || String(f.name || '').trim()
+          if (!name) { notify('先完成一次训练', 'bad'); return }
+          if (!result?.profilePath) { notify('这个音色还缺 Profile，先补 Profile 再制作', 'bad'); return }
+          const pick = bestTake(result)
+          const epoch = pick?.epoch || 0
+          // 即使选最终模型也调用 /train/use：models/<name>.pth 可能被之前的试听轮次覆盖过。
+          const r = await post('/train/use', { name, epoch })
+          if (!r.ok) { notify(r.message || '切换模型失败', 'bad'); return }
+          setVoiceId(r.voiceId)
+          notify(epoch > 0
+            ? `已用拟合度最高的第 ${epoch} 轮（${Number(pick.fit).toFixed(1)}%）${r.hasProfile ? '' : '；缺 Profile，分析可能不可用'}`
+            : `已用最终模型${pick && Number.isFinite(pick.fit) ? `（拟合度 ${Number(pick.fit).toFixed(1)}%）` : ''}`)
+          await loadState()
+          refreshHistory()
+          goStudio('songs')
+        }
+
+        const useHistoryModel = async (item) => {
+          const r = await post('/train/use', { name: item.name, epoch: item.epoch })
+          if (!r.ok) { notify(r.message || '切换失败', 'bad'); return }
+          setVoiceId(r.voiceId)
+          notify(`已设为当前音色：${r.voiceId} · 第 ${item.epoch} 轮${r.hasProfile ? '' : '（缺 Profile，分析可能不可用）'}`)
+          loadState()
+          refreshHistory()
+        }
+
+        const historyGroups = []
+        for (const item of (trainHistory || [])) {
+          const last = historyGroups[historyGroups.length - 1]
+          if (last && last.name === item.name) last.items.push(item)
+          else historyGroups.push({ name: item.name, finishedAt: item.finishedAt, items: [item] })
+        }
+        const hasHistory = historyGroups.length > 0
+
+        const historyCard = () => h('section', { className: 'ss-card ss-train-history' },
+          h('div', { className: 'ss-card-head' },
+            h('div', { className: 'ss-card-heading' },
+              h('h3', { className: 'ss-card-title' },
+                h(NavIcon, { d: ICON.download, size: 15 }),
+                h(Tip, { tip: '按模型名分组，点任意一轮设为当前音色', side: true, plain: true }, '历史模型')))),
+          h('div', { className: 'ss-history-list' },
+            historyGroups.map((group) => h('div', { key: group.name, className: 'ss-history-group' },
+              h('div', { className: 'ss-history-group-head' },
+                h('span', { className: 'ss-history-name', title: group.name }, group.name),
+                h('span', { className: 'ss-history-time' }, group.finishedAt ? fmtStamp(group.finishedAt) : '—')),
+              group.items.map((item) => {
+                const active = item.name === voiceId && item.activeEpoch === item.epoch
+                return h('button', {
+                  key: `${item.name}_${item.epoch}`,
+                  type: 'button',
+                  className: 'ss-history-row' + (active ? ' on' : ''),
+                  title: active ? `当前使用第 ${item.epoch} 轮` : `设为当前音色：第 ${item.epoch} 轮`,
+                  onClick: () => useHistoryModel(item),
+                },
+                  h('span', { className: 'ss-history-epoch' }, `第 ${item.epoch} 轮`),
+                  item.fit == null ? null : h('span', { className: 'ss-history-fit' }, `${Number(item.fit).toFixed(1)}%`),
+                  item.hasProfile ? null : h('span', { className: 'ss-history-note' }, '缺 Profile'),
+                  h('span', { className: 'ss-history-go' }, h(NavIcon, { d: ICON.chevron, size: 13 })),
+                )
+              }),
+            ))),
+        )
+
+        const field = (label, control, tip, wide) => h('div', { className: 'ss-field' + (wide ? ' wide' : '') },
+          h('label', null, tip ? h(Tip, { tip, up: true }, label) : label),
+          control,
+        )
+        const numInput = (key, min, max, step) => h('input', {
+          className: 'ss-input', type: 'number', min, max, step: step || 1, value: f[key],
+          onChange: (e) => patchTrain({ [key]: e.target.value === '' ? '' : Number(e.target.value) }),
+        })
+        const select = (key, options) => h('select', {
+          className: 'ss-select', value: f[key], onChange: (e) => patchTrain({ [key]: e.target.value }),
+        }, options.map(([value, label]) => h('option', { key: value, value }, label)))
+        const toggle = (key, label, tip) => h('div', { className: 'ss-field' },
+          h('label', { className: 'ss-toggle' },
+            h('input', { type: 'checkbox', checked: Boolean(f[key]), onChange: (e) => patchTrain({ [key]: e.target.checked }) }),
+            tip ? h(Tip, { tip, up: true }, label) : label,
+          ),
+        )
+
+        const modelInspectPanel = () => {
+          const ins = modelInspect
+          if (!ins) return null
+          const okFormat = Boolean(ins.model?.format?.ok)
+          const okProfile = Boolean(ins.profile?.validation?.ok)
+          const meta = ins.metadata
+          const profileOnlyError = !okProfile && (ins.errors || []).length === 1 && String(ins.errors[0]).includes('Profile')
+          return h('div', { className: 'ss-inspect' },
+            h('div', { className: 'ss-inspect-head' },
+              ins.model
+                ? h('span', { className: 'ss-tag ' + (okFormat ? 'good' : 'warn') }, okFormat ? '格式正常' : '格式异常')
+                : h('span', { className: 'ss-tag warn' }, '路径不可用'),
+              ins.model ? h('span', { className: 'ss-tag ' + (okProfile ? 'good' : 'warn') }, okProfile ? 'Profile 正常' : 'Profile 异常') : null,
+              meta ? h('span', { className: 'ss-help' },
+                `${meta.version ? `RVC ${meta.version}` : 'RVC'}${meta.sampleRate ? ` · ${meta.sampleRate / 1000}k` : ''}${meta.epochs ? ` · ${meta.epochs} 轮` : ''}`) : null,
+            ),
+            ins.model ? h('div', { className: 'ss-kv' },
+              h('span', { className: 'k' }, '模型'),
+              h('span', { className: 'v', title: ins.model.path }, ins.model.path),
+              ins.profile?.path ? h(React.Fragment, null,
+                h('span', { className: 'k' }, 'Profile'),
+                h('span', { className: 'v', title: ins.profile.path }, ins.profile.path)) : null,
+              ins.index ? h(React.Fragment, null,
+                h('span', { className: 'k' }, '索引'),
+                h('span', { className: 'v' }, `${ins.index.fileName} · ${fmtMB(ins.index.bytes)}`)) : null,
+              h('span', { className: 'k' }, '大小'),
+              h('span', { className: 'v' }, fmtMB(ins.model.bytes)),
+            ) : null,
+            ins.errors?.length && !profileOnlyError ? h('div', { className: 'ss-inspect-msg' }, '未通过：' + ins.errors.join('；')) : null,
+            ins.warnings?.length ? h('div', { className: 'ss-inspect-msg dim' }, '提示：' + ins.warnings.join('；')) : null,
+            ins.model && !okProfile ? h('div', { className: 'ss-inspect-msg dim' },
+              `还没有可用的音域 Profile：点上方「生成 Profile」，或指定已有 Profile。参考位置：${ins.library?.suggestedProfilePath || ''}`) : null,
+            ins.model ? h('div', { className: 'ss-inspect-actions' },
+              h('button', {
+                className: 'ss-btn sm ghost', type: 'button',
+                onClick: () => copyText(ins.model.path, '模型路径'),
+              }, '复制模型路径'),
+              ins.profile?.path ? h('button', {
+                className: 'ss-btn sm ghost', type: 'button',
+                onClick: () => copyText(ins.profile.path, 'Profile 路径'),
+              }, '复制 Profile 路径') : null,
+              ins.ok && !ins.library?.alreadyInLibrary && !ins.library?.modelExists ? h('button', {
+                className: 'ss-btn sm primary', disabled: modelImporting, onClick: importCheckedModel,
+              }, modelImporting ? '加入中…' : '加入模型库') : null,
+              ins.library?.alreadyInLibrary ? h('span', { className: 'ss-tag good' }, '已在模型库') : null,
+              ins.library?.modelExists && !ins.library?.alreadyInLibrary
+                ? h('span', { className: 'ss-tag warn' }, '模型库已有同名模型') : null,
+            ) : null,
+          )
+        }
+
+        const importPanel = () => {
+          const modelReady = Boolean(String(modelPath || '').trim())
+          const dataReady = Boolean(String(f.datasetPath || '').trim())
+          const inLibrary = modelReady && voices.some((v) => v.file && v.file === modelPath)
+          const listId = voices.some((v) => v.file) ? 'ss-model-paths' : undefined
+          const hint = !envReady
+            ? ''
+            : !dataReady
+              ? '生成 Profile 需要训练数据目录'
+              : inLibrary
+                ? '已在模型库，可更新 Profile'
+                : ''
+          const inspectPanel = modelInspectPanel()
+          return h('section', { className: 'ss-card ss-train-card' },
+            h('div', { className: 'ss-train-section' },
+              h('div', { className: 'ss-form-grid' },
+                field('模型权重', h(React.Fragment, null,
+                  h('input', {
+                    className: 'ss-input', list: listId, value: modelPath,
+                    placeholder: '选择或输入 .pth 路径',
+                    onChange: (e) => {
+                      const next = e.target.value
+                      setModelPath(next)
+                      setModelInspect(null)
+                      // 从模型库切换权重时清掉上一份 Profile，避免校验到不匹配的同名文件。
+                      if (voices.some((v) => v.file === next)) setModelProfilePath('')
+                    },
+                    onKeyDown: (e) => { if (e.key === 'Enter') { e.preventDefault(); checkModelPath() } },
+                  }),
+                  listId ? h('datalist', { id: listId },
+                    voices.filter((v) => v.file).map((v) => h('option', { key: v.id, value: v.file },
+                      `${v.label} · ${v.id}${v.usable ? '' : ' · 缺 Profile'}`)),
+                  ) : null,
+                ), '支持 .pth 文件或包含 .pth 的目录；可从模型库选择。', true),
+                field('训练数据', h('input', {
+                  className: 'ss-input', value: f.datasetPath, placeholder: '/Users/you/datasets/my_voice',
+                  onChange: (e) => { patchTrain({ datasetPath: e.target.value }); setTrainCheck(null); setTrainMsg('') },
+                }), '用这个目录里的目标音色干声统计音域；不会重新训练模型。'),
+                field('已有 Profile', h('input', {
+                  className: 'ss-input', value: modelProfilePath, placeholder: '可留空，自动查找',
+                  onChange: (e) => { setModelProfilePath(e.target.value); setModelInspect(null) },
+                  onKeyDown: (e) => { if (e.key === 'Enter') { e.preventDefault(); checkModelPath() } },
+                }), '可选；留空时自动查找同名 .json。'),
+              ),
+            ),
+            h('div', { className: 'ss-train-foot' },
+              h('div', { className: 'ss-train-foot-hint' }, hint),
+              h('div', { className: 'ss-train-foot-actions' },
+                h('button', {
+                  className: 'ss-btn', type: 'button', disabled: modelInspecting || !modelReady,
+                  onClick: () => checkModelPath(),
+                }, modelInspecting ? '校验中…' : '校验'),
+                h('button', {
+                  className: 'ss-btn primary', type: 'button', onClick: profileCheckedModel,
+                  disabled: modelProfiling || !modelReady || !dataReady || !envReady,
+                  title: inLibrary ? '按训练数据重新统计音域并更新 Profile' : '按训练数据生成音域 Profile，并把模型和索引加入模型库',
+                }, modelProfiling ? '生成中…' : inLibrary ? '更新 Profile' : '生成 Profile 并加入'),
+              ),
+            ),
+            inspectPanel ? h('div', { className: 'ss-train-status' }, inspectPanel) : null,
+          )
+        }
+
+        const soulxVoices = voices.filter((v) => v.kind === 'soulx')
+        const defaultSoulxPrompt = String(state?.settings?.soulxPromptWav || '').trim()
+        const soulxSettings = settingsDraft || state?.settings || {}
+        const soulxDirtyKeys = ['soulxDevice', 'soulxSteps', 'soulxCfg', 'soulxPromptSeconds']
+        const soulxDirty = Boolean(settingsDraft && state)
+          && soulxDirtyKeys.some((key) => JSON.stringify(settingsDraft[key]) !== JSON.stringify(state.settings[key]))
+        const setSoulxSetting = (key, value) => setSettingsDraft({ ...soulxSettings, [key]: value })
+
+        const soulxPanel = () => {
+          const promptReady = Boolean(String(soulxPromptPath || '').trim() || defaultSoulxPrompt)
+          const hint = !envReady
+            ? ''
+            : !promptReady
+              ? '先填参考音频'
+              : defaultSoulxPrompt && !String(soulxPromptPath || '').trim()
+                ? '留空时使用已保存的默认参考音频'
+                : ''
+          return h('section', { className: 'ss-card ss-train-card' },
+            h('div', { className: 'ss-train-section' },
+              h('div', { className: 'ss-form-grid' },
+                field('参考音频', h('input', {
+                  id: 'ss-soulx-prompt', className: 'ss-input', value: soulxPromptPath,
+                  placeholder: defaultSoulxPrompt ? `留空使用默认：${defaultSoulxPrompt}` : '/path/to/reference.wav',
+                  onChange: (e) => setSoulxPromptPath(e.target.value),
+                  onKeyDown: (e) => { if (e.key === 'Enter') { e.preventDefault(); createSoulxVoiceAction() } },
+                }), '5–30 秒干净人声，少混响、无伴奏；留空时使用已保存的默认参考音频。', true),
+                field('显示名', h('input', {
+                  className: 'ss-input', value: soulxLabel, placeholder: '例如：xx音色',
+                  onChange: (e) => setSoulxLabel(e.target.value),
+                  onKeyDown: (e) => { if (e.key === 'Enter') { e.preventDefault(); createSoulxVoiceAction() } },
+                }), '在音色列表里显示的名字；留空自动生成。'),
+              ),
+            ),
+            h('div', { className: 'ss-train-foot' },
+              h('div', { className: 'ss-train-foot-hint' }, hint),
+              h('div', { className: 'ss-train-foot-actions' },
+                h('button', {
+                  className: 'ss-btn primary', type: 'button', onClick: createSoulxVoiceAction,
+                  disabled: soulxCreating || !envReady || !promptReady,
+                }, soulxCreating ? '创建中…' : '创建音色'),
+              ),
+            ),
+            soulxResult ? h('div', { className: 'ss-train-status' },
+              h('div', { className: 'ss-inspect' },
+                h('div', { className: 'ss-inspect-head' },
+                  h('span', { className: 'ss-tag good' }, '已创建'),
+                  soulxResult.profile ? h('span', { className: 'ss-help' },
+                    `舒适 ${noteName(soulxResult.profile.p5)}–${noteName(soulxResult.profile.p95)} · ${soulxResult.profile.clips || 1} 段 / ${soulxResult.profile.durationSec || '—'} 秒`) : null,
+                ),
+                h('div', { className: 'ss-inspect-actions' },
+                  h('button', {
+                    className: 'ss-btn sm primary', type: 'button',
+                    onClick: () => goStudio('timeline'),
+                  }, '去音高时间轴'),
+                  h('button', {
+                    className: 'ss-btn sm ghost', type: 'button', title: soulxResult.profilePath || '',
+                    onClick: () => copyText(soulxResult.profilePath || '', 'Profile 路径'),
+                  }, '复制 Profile 路径'),
+                ),
+              ),
+            ) : null,
+            h('details', { className: 'ss-settings-section', style: { margin: '0 18px 18px' } },
+              h('summary', null,
+                h('span', { className: 'ss-settings-summary' },
+                  h('span', { className: 'ss-settings-title' },
+                    h(Tip, { tip: '设备、扩散步数、CFG 和参考截取', side: true, plain: true }, '高级参数')),
+                ),
+                h('span', { className: 'ss-settings-chevron' }, h(NavIcon, { d: ICON.chevron, size: 14 })),
+              ),
+              h('div', { className: 'ss-form-grid', style: { marginTop: 10 } },
+                field('设备', h('select', {
+                  className: 'ss-select', value: String(soulxSettings.soulxDevice || 'auto'),
+                  onChange: (e) => setSoulxSetting('soulxDevice', e.target.value),
+                },
+                  h('option', { value: 'auto' }, 'auto · 自动'),
+                  h('option', { value: 'mps' }, 'mps · Apple GPU'),
+                  h('option', { value: 'cuda' }, 'cuda · NVIDIA'),
+                  h('option', { value: 'cpu' }, 'cpu · 仅 CPU'),
+                ), 'auto 优先 CUDA / MPS，否则走 CPU。'),
+                field('扩散步数', h('input', {
+                  className: 'ss-input', type: 'number', step: '1', value: soulxSettings.soulxSteps ?? '',
+                  onChange: (e) => setSoulxSetting('soulxSteps', e.target.value === '' ? '' : Number(e.target.value)),
+                }), '越大越细，也更慢。默认 16。'),
+                field('CFG', h('input', {
+                  className: 'ss-input', type: 'number', step: '0.1', value: soulxSettings.soulxCfg ?? '',
+                  onChange: (e) => setSoulxSetting('soulxCfg', e.target.value === '' ? '' : Number(e.target.value)),
+                }), '参考音频的跟随强度。默认 3.0。'),
+                field('参考截取', h('input', {
+                  className: 'ss-input', type: 'number', step: '1', value: soulxSettings.soulxPromptSeconds ?? '',
+                  onChange: (e) => setSoulxSetting('soulxPromptSeconds', e.target.value === '' ? '' : Number(e.target.value)),
+                }), '从参考音频里取多长（秒）。默认 12。'),
+              ),
+              soulxDirty ? h('div', { className: 'ss-savebar inline' },
+                h('div', { className: 'ss-savebar-text dirty' }, '有未保存的改动'),
+                h('div', { className: 'ss-savebar-actions' },
+                  h('button', {
+                    className: 'ss-btn ghost', type: 'button', disabled: soulxSaving,
+                    onClick: () => setSettingsDraft(null),
+                  }, '撤销'),
+                  h('button', {
+                    className: 'ss-btn primary', type: 'button', disabled: soulxSaving,
+                    onClick: saveSoulxSettings,
+                  }, soulxSaving ? '保存中…' : '保存参数'),
+                ),
+              ) : null,
+            ),
+            soulxVoices.length ? h('div', { className: 'ss-train-section' },
+              h('div', { className: 'ss-train-label' }, '已有 SoulX 音色'),
+              h('div', { className: 'ss-soulx-list', style: { marginTop: 0 } },
+                soulxVoices.map((v) => h('div', { key: v.id, className: 'ss-soulx-item' },
+                  h('div', { className: 'ss-soulx-main' },
+                    h('div', { className: 'ss-soulx-name' }, v.label),
+                    h('div', { className: 'ss-soulx-meta', title: v.promptWav || '' },
+                      `${v.range ? `${noteName(v.range.low)}–${noteName(v.range.high)}` : 'Profile 异常'} · ${v.promptWav || '无参考音频'}`),
+                  ),
+                  h('button', {
+                    className: 'ss-btn sm' + (voiceId === v.id ? ' primary' : ' ghost'), type: 'button',
+                    onClick: () => { setVoiceId(v.id); setBackend('soulx'); goStudio('timeline') },
+                  }, voiceId === v.id ? '当前' : '使用'),
+                )),
+              ),
+            ) : null,
+          )
+        }
+
+        const canStart = Boolean(training?.ok) && !busy && !jobBusy && Boolean(String(f.datasetPath || '').trim()) && Boolean(String(f.name || '').trim())
+        const trainHint = !training?.ok
+          ? ''
+          : !String(f.datasetPath || '').trim()
+            ? '先填训练数据目录'
+            : !String(f.name || '').trim()
+              ? '先填模型名'
+              : jobBusy && !busy
+                ? '已有后台任务在运行'
+                : ''
+        const showProgress = Boolean(trainJob && (busy || trainJob.status === 'error' || trainJob.status === 'cancelled' || (trainJob.status === 'done' && !result)))
+        const resultBlock = result ? h('div', { className: 'ss-train-result' },
+          h('div', { className: 'ss-result-head' },
+            h('span', { className: 'ss-tag good' }, '训练完成'),
+            h('span', { className: 'ss-result-name' }, result.label || result.voiceId || f.name || ''),
+            h('span', { className: 'ss-result-meta' },
+              [result.sr, result.version, result.epochs ? `${result.epochs} 轮` : ''].filter(Boolean).join(' · ')),
+          ),
+          h('div', { className: 'ss-train-stats' },
+            h('div', { className: 'ss-train-stat' },
+              h('span', { className: 'k' }, '轮数'),
+              h('span', { className: 'v' }, result.epochs ?? '—'),
+            ),
+            h('div', { className: 'ss-train-stat' },
+              h('span', { className: 'k' }, '切片'),
+              h('span', { className: 'v' }, result.slices ?? '—'),
+            ),
+            h('div', { className: 'ss-train-stat fit' },
+              h('span', { className: 'k' }, '拟合度'),
+              h('span', { className: 'v' }, result.fit == null ? '—' : `${Number(result.fit).toFixed(1)}%`),
+            ),
+            h('div', { className: 'ss-train-stat' },
+              h('span', { className: 'k' }, 'mel loss'),
+              h('span', { className: 'v' }, result.finalLoss == null ? '—' : Number(result.finalLoss).toFixed(2)),
+            ),
+          ),
+          h('div', { className: 'ss-result-actions' },
+            h('button', {
+              className: 'ss-btn primary', onClick: useBestTake,
+              title: '自动选择当前可用模型中拟合度最高的一轮',
+            }, '用这个音色去制作'),
+            h('button', {
+              className: 'ss-btn ghost', title: result.modelPath || '',
+              onClick: () => copyText(result.modelPath || '', '模型路径'),
+            }, '复制模型路径'),
+            result.profilePath ? h('button', {
+              className: 'ss-btn ghost', title: result.profilePath,
+              onClick: () => copyText(result.profilePath, 'Profile 路径'),
+            }, '复制 Profile 路径') : h('span', { className: 'ss-tag warn' }, '缺 Profile'),
+          ),
+        ) : null
+
+        const trainPanel = () => {
+          const checkLine = trainCheck
+            ? (trainCheck.ok
+              ? h('div', {
+                className: 'ss-train-check ok',
+                title: trainCheck.samples?.length ? `例如：${trainCheck.samples.slice(0, 3).join('、')}` : '',
+              }, `已找到 ${trainCheck.files} 个音频 · ${fmtMB(trainCheck.bytes)}`)
+              : h('div', { className: 'ss-train-check bad' }, trainCheck.message || '目录不可用'))
+            : null
+          return h('div', { className: 'ss-train-layout' + (hasHistory ? ' with-side' : '') },
+            h('div', { className: 'ss-train-main' },
+              h('section', { className: 'ss-card ss-train-card' },
+                h('div', { className: 'ss-train-section' },
+                  h('div', { className: 'ss-train-label' }, '训练数据'),
+                  h('div', { className: 'ss-train-path' },
+                    h('input', {
+                      className: 'ss-input', placeholder: '/Users/you/datasets/my_voice',
+                      value: f.datasetPath,
+                      onChange: (e) => { patchTrain({ datasetPath: e.target.value }); setTrainCheck(null); setTrainMsg('') },
+                      onBlur: () => { if (String(f.datasetPath || '').trim()) checkDataset(false) },
+                    }),
+                    h('button', { className: 'ss-btn', disabled: trainChecking, onClick: () => checkDataset(true) },
+                      trainChecking ? '检查中…' : '检查'),
+                  ),
+                  checkLine,
+                  trainMsg ? h('div', { className: 'ss-train-check bad' }, trainMsg) : null,
+                ),
+                h('div', { className: 'ss-train-section' },
+                  h('div', { className: 'ss-train-label' }, '训练参数'),
+                  h('div', { className: 'ss-form-grid' },
+                    field('模型名', h('input', {
+                      className: 'ss-input', placeholder: 'my_voice', value: f.name,
+                      onChange: (e) => { patchTrain({ name: e.target.value.replace(/\s+/g, '_') }); setTrainMsg('') },
+                    }), '只能使用字母、数字、下划线和短横线；同时作为 .pth 文件名和音色 id。'),
+                    field('显示名', h('input', {
+                      className: 'ss-input', placeholder: '例如：大肥鱼 2 号', value: f.label,
+                      onChange: (e) => patchTrain({ label: e.target.value }),
+                    }), '在音色下拉框里显示的名字；留空使用模型名。'),
+                    field('采样率', select('sr', [['48k', '48k · 高质量'], ['40k', '40k · 平衡'], ['32k', '32k · 快速']]),
+                      '越高越接近原声，训练和推理也更慢；48k + v2 有官方底模，收敛最快。'),
+                    field('总轮数', numInput('epochs', 1, 500), '遍历数据集的次数；默认 20，越大越像，但更慢、也容易过拟合。'),
+                  ),
+                  h('details', { className: 'ss-settings-section', style: { marginTop: 12 } },
+                    h('summary', null,
+                      h('span', { className: 'ss-settings-summary' },
+                        h('span', { className: 'ss-settings-title' },
+                          h(Tip, { tip: '版本、批大小、切片、F0、设备、底模与索引', side: true, plain: true }, '高级参数')),
+                      ),
+                      h('span', { className: 'ss-settings-chevron' }, h(NavIcon, { d: ICON.chevron, size: 14 })),
+                    ),
+                    h('div', { className: 'ss-form-grid', style: { marginTop: 10 } },
+                      field('模型版本', select('version', [['v2', 'v2 · 高质量'], ['v1', 'v1 · 轻量']]),
+                        'v2 使用更大的 HuBERT 特征，音质更好；v1 更轻。'),
+                      field('批大小', numInput('batchSize', 1, 32), '每步同时处理多少片段；显存不够就调小。默认 4。'),
+                      field('保存间隔', numInput('saveEvery', 1, 100), '每多少轮保存一次检查点；取消或失败时可以保留中间状态。'),
+                      field('试听间隔', numInput('auditionEvery', 0, 100),
+                        '每 N 轮导出一份可直接试听的 .pth；0 关闭。'),
+                      field('切片长度', numInput('per', 1, 10, 0.1), '每条训练片段最长几秒；默认 3.7。'),
+                      field('F0 方法', select('f0Method', [['rmvpe', 'rmvpe · 更准'], ['pm', 'pm · 更快']]),
+                        '人声音高提取算法；rmvpe 质量更好但更慢。'),
+                      field('并行进程', numInput('nP', 1, 8), '切分音频和提取 F0 的并行数；越小越稳，默认 2。'),
+                      field('训练设备', select('device', [['auto', 'auto · 优先 GPU'], ['cuda', 'cuda · 强制 GPU'], ['cpu', 'cpu · 强制 CPU']]),
+                        'auto 会检测 CUDA；Apple Silicon 走 CPU，训练会比较慢。'),
+                      toggle('pretrained', '预训练底模', '从官方 48k 底模开始收敛快很多；取消则从零训练，需要更多轮数。'),
+                      toggle('index', '检索索引', '训练完成后构建 faiss 检索索引，用于相似度检索；不影响模型本身。'),
+                    ),
+                  ),
+                ),
+                showProgress ? h('div', { className: 'ss-train-status' },
+                  h(TrainProgress, { job: trainJob, onCancel: cancel })) : null,
+                resultBlock,
+                h('div', { className: 'ss-train-foot' },
+                  h('div', { className: 'ss-train-foot-hint' }, trainHint),
+                  h('div', { className: 'ss-train-foot-actions' },
+                    h('button', { className: 'ss-btn primary', disabled: !canStart, onClick: () => startTraining() },
+                      busy ? '训练中…' : '开始训练'),
+                  ),
+                ),
+              ),
+            ),
+            hasHistory ? h('aside', { className: 'ss-train-side' }, historyCard()) : null,
+          )
+        }
+
+        const modeTabs = h('div', { className: 'ss-tabs ss-train-tabs', role: 'tablist', 'aria-label': '音色来源' },
+          TRAIN_MODES.map((mode) => h('button', {
+            key: mode.id, type: 'button', role: 'tab', title: mode.tip,
+            'aria-selected': trainMode === mode.id,
+            className: 'ss-tab' + (trainMode === mode.id ? ' on' : ''),
+            onClick: () => setTrainMode(mode.id),
+          },
+            h(NavIcon, { d: mode.icon, size: 14 }),
+            mode.label,
+          )),
+        )
+
+        return h(React.Fragment, null,
+          modeTabs,
+          training && !training.ok ? h('div', { className: 'ss-warn', style: { marginBottom: 14 } },
+            `训练环境还没准备好：${training.missing.map((x) => x.label).join('、')}。`,
+            h('button', { className: 'ss-btn sm', onClick: () => go('env') }, '去环境准备'),
+          ) : null,
+          trainMode === 'import' ? importPanel() : trainMode === 'soulx' ? soulxPanel() : trainPanel(),
+        )
+      }
+
+      const renderWorkbench = () => {
+        const status = !analysis
+          ? h('span', { className: 'ss-tag' }, '待分析')
+          : !selected
+            ? h('span', { className: 'ss-tag good' }, '已分析')
+            : h('span', { className: 'ss-tag good' }, `方案 ${selected.label || ''}`)
+        return h(Card, { title: '选择与生成', icon: ICON.studio, right: status },
+          h('div', { style: { display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'flex-end' } },
+            h('div', { className: 'ss-field', style: { flex: '2 1 260px', minWidth: 0 } },
               h('label', null, '歌曲'),
               h('select', {
                 className: 'ss-select', value: songId,
-                onChange: (e) => pickSong(e.target.value),
+                onChange: (e) => pickSong(e.target.value, { stay: true }),
               },
                 h('option', { value: '' }, '选择已上传歌曲…'),
                 songs.map((s) => h('option', { key: s.id, value: s.id }, `${s.name} · ${fmtTime(s.duration)}`)),
               ),
             ),
-            h('div', { className: 'ss-field' },
+            h('div', { className: 'ss-field', style: { flex: '2 1 220px', minWidth: 0 } },
               h('label', null, '音色模型'),
               h('select', {
                 className: 'ss-select', value: voiceId,
@@ -3161,314 +3866,189 @@ window.__ModuleLoader__.load({
               },
                 h('option', { value: '' }, '选择音色模型…'),
                 voices.map((v) => h('option', {
-                  key: v.id, value: v.id, disabled: !v.calibrated,
-                }, `${v.label}${v.calibrated ? ` · ${noteName(v.profile.p5)}–${noteName(v.profile.p95)}` : ' · 未校准'}`)),
+                  key: v.id, value: v.id,
+                  disabled: !v.usable || (v.kind === 'soulx' && backend !== 'soulx'),
+                }, `${v.label}${v.usable ? ` · ${noteName(v.profile.p5)}–${noteName(v.profile.p95)}` : !v.format?.ok ? ' · 模型异常' : v.calibrated ? ' · Profile 异常' : ' · 未校准'}${v.kind === 'soulx' ? ' · SoulX 零样本' : ''}`)),
               ),
-              voices.length ? null : h('div', { className: 'ss-note', style: { marginTop: 6 } },
-                '还没有音色模型：去「RVC训练」训练一个，或把 .pth 放到音色模型目录（见「设置」页）。'),
+            ),
+            h('div', { className: 'ss-field', style: { flex: '1 1 150px', minWidth: 0 } },
+              h('label', null, h(Tip, { tip: 'RVC 使用训练好的音色；SoulX 用参考音频零样本换声。', up: true }, '后端')),
+              h('select', {
+                className: 'ss-select', value: backend,
+                onChange: (e) => setBackend(e.target.value),
+              },
+                h('option', { value: 'rvc' }, 'RVC · 已训练音色'),
+                h('option', { value: 'soulx' }, 'SoulX · 零样本'),
+              ),
             ),
           ),
-          h('div', { style: { display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 11 } },
-            h('button', { className: 'ss-btn ghost', onClick: () => fileRef.current?.click(), disabled: uploading }, uploading ? '上传中…' : '上传新歌'),
-            song ? h('span', { className: 'ss-tag' }, fmtTime(song.duration)) : null,
-          ),
-          voice?.profile ? h('div', { className: 'ss-note', style: { marginTop: 9 } },
-            `舒适区 ${noteName(voice.profile.p5)}–${noteName(voice.profile.p95)} · 极限区 ${noteName(voice.profile.p1)}–${noteName(voice.profile.p99)}`,
-          ) : null,
-          h('div', { className: 'ss-backends' },
+          voice && voicePath ? h('div', { className: 'ss-model-context' },
+            h('span', { className: 'ss-model-context-label' }, voice.kind === 'soulx' ? '参考音频' : '模型路径'),
+            h('span', { className: 'ss-model-path', title: voicePath }, voicePath),
             h('button', {
-              type: 'button', className: 'ss-backend' + (backend === 'rvc' ? ' on' : ''), 'aria-pressed': backend === 'rvc',
-              onClick: () => setBackend('rvc'),
-            },
-              h('span', { className: 'ss-backend-radio' }),
-              h('span', { className: 'ss-backend-body' },
-                h('span', { className: 'ss-backend-title' }, 'RVC · 已训练音色'),
-                h('span', { className: 'ss-backend-desc' }, '速度快。'),
-              ),
-              h('span', { className: 'ss-tag ' + (state?.settings?.checks?.rvc ? 'good' : 'warn') }, state?.settings?.checks?.rvc ? '就绪' : '缺失'),
-            ),
-            h('button', {
-              type: 'button', className: 'ss-backend' + (backend === 'soulx' ? ' on' : ''), 'aria-pressed': backend === 'soulx',
-              onClick: () => setBackend('soulx'),
-            },
-              h('span', { className: 'ss-backend-radio' }),
-              h('span', { className: 'ss-backend-body' },
-                h('span', { className: 'ss-backend-title' }, 'SoulX-SVC · 零样本'),
-                h('span', { className: 'ss-backend-desc' }, '参考音频克隆，首次慢。'),
-              ),
-              h('span', { className: 'ss-tag ' + (soulxReady ? 'good' : 'warn') }, soulxReady ? '就绪' : '未安装'),
-            ),
-          ),
-        ),
-        h(Card, {
-          title: '② 开始处理',
-          icon: ICON.spark,
-          style: { marginTop: 14 },
-          right: h('span', { className: 'ss-tag ' + (soulxReady ? 'good' : '') }, backend === 'soulx' ? 'SoulX 后端' : 'RVC 后端'),
-        },
-          h('div', { className: 'ss-actions' },
-            h('div', { className: 'ss-action' },
-              h('span', { className: 'ss-action-num' }, '1'),
-              h('h4', null, '分析 F0'),
-              h('p', null, '提取人声音高。'),
-              h('button', { className: 'ss-btn primary', onClick: analyze, disabled: !envReady || !songId || !voiceId || jobBusy }, jobBusy ? '处理中…' : '分析 F0'),
-            ),
-            h('div', { className: 'ss-action' },
-              h('span', { className: 'ss-action-num' }, '2'),
-              h('h4', null, '超音域处理'),
-              h('p', null, '自动生成八度方案。'),
-              h('button', { className: 'ss-btn', onClick: plan, disabled: !envReady || !analysis || jobBusy }, '生成方案'),
-            ),
-            h('div', { className: 'ss-action' },
-              h('span', { className: 'ss-action-num' }, '3'),
-              h('h4', null, '生成歌曲'),
-              h('p', null, '按方案生成成品。'),
-              h('button', {
-                className: 'ss-btn primary', onClick: render,
-                disabled: !envReady || !selected || jobBusy || (backend === 'soulx' && (!soulxReady || !promptReady)),
-                title: backend === 'soulx' && !soulxReady ? 'SoulX 未安装'
-                  : backend === 'soulx' && !promptReady ? '当前音色没有 promptWav 参考音频' : '',
-              }, '生成歌曲'),
-            ),
-          ),
-          job ? h(JobProgress, { job, onCancel: cancel }) : null,
-          job?.error ? h('div', { className: 'ss-warn' }, job.error) : null,
-          state && !envReady ? h('div', { className: 'ss-warn' },
-            `环境还缺 ${deps.missing?.length || 0} 项，分析和生成暂不可用。`,
-            h('button', { className: 'ss-btn sm', onClick: () => go('env') }, '去环境准备'),
+              className: 'ss-btn sm ghost', type: 'button',
+              onClick: () => copyText(voicePath, voice.kind === 'soulx' ? '参考音频' : '模型路径'),
+            }, '复制'),
+            voice.usable === false ? h('span', { className: 'ss-tag warn' }, '模型不可用') : null,
           ) : null,
+          h('div', { style: { display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginTop: 10 } },
+            h('button', {
+              className: 'ss-btn' + (!analysis ? ' primary' : ''), onClick: analyze,
+              disabled: !envReady || !songId || !voiceId || studioBusy,
+            }, studioBusy ? '处理中…' : '分析 F0'),
+            h('button', {
+              className: 'ss-btn' + (analysis && !selected ? ' primary' : ''),
+              onClick: plan, disabled: !envReady || !analysis || studioBusy,
+            }, '生成方案'),
+            h('button', {
+              className: 'ss-btn' + (selected ? ' primary' : ''), onClick: render,
+              disabled: !envReady || !selected || studioBusy || !voiceCompatible || (backend === 'soulx' && (!soulxReady || !promptReady)),
+              title: !voiceCompatible ? '当前音色是 SoulX 零样本音色，不能用于 RVC'
+                : backend === 'soulx' && !soulxReady ? 'SoulX 未安装'
+                : backend === 'soulx' && !promptReady ? '当前音色没有 promptWav，也没有默认参考音频' : '',
+            }, '生成歌曲'),
+          ),
+          voices.length ? null : h('div', { className: 'ss-warn', style: { marginTop: 8 } },
+            '还没有音色模型。',
+            h('button', { className: 'ss-btn sm', onClick: () => { setTrainMode('train'); go('train') } }, '去训练音色')),
+          !envReady ? h('div', { className: 'ss-warn', style: { marginTop: 8 } },
+            '环境还没就绪，分析和生成不可用。',
+            h('button', { className: 'ss-btn sm', onClick: () => go('env') }, '去准备环境')) : null,
+          backend === 'rvc' && voice?.kind === 'soulx'
+            ? h('div', { className: 'ss-warn', style: { marginTop: 8 } },
+              '当前音色是 SoulX 零样本音色，不能用于 RVC。',
+              h('button', { className: 'ss-btn sm', onClick: () => setBackend('soulx') }, '切到 SoulX')) : null,
           backend === 'soulx' && !soulxReady
-            ? h('div', { className: 'ss-warn' }, 'SoulX 未就绪；在「环境」页准备，或在设置里改路径。')
-            : null,
+            ? h('div', { className: 'ss-warn', style: { marginTop: 8 } },
+              'SoulX 未就绪。',
+              h('button', { className: 'ss-btn sm', onClick: () => go('env') }, '去环境准备')) : null,
           backend === 'soulx' && soulxReady && !promptReady
-            ? h('div', { className: 'ss-warn' }, '当前音色没有 promptWav 参考音频。')
-            : null,
-        ),
-        coversCard,
-        h(SettingsPanel, {
-          state, draft: settingsDraft, setDraft: setSettingsDraft, onSaved: loadState, toast: notify,
-          groups: SETTING_GROUPS.filter((g) => g.page === 'studio'),
-          title: '制作台设置',
-          desc: '网易云、八度规划、F0 分析和 SoulX 参数；保存后自动检查环境。',
-          showChecks: false, inline: true,
-        }),
+            ? h('div', { className: 'ss-warn', style: { marginTop: 8 } },
+              '当前音色没有参考音频；可以在音色 Profile 里配置 promptWav，或使用已有零样本音色。',
+              h('button', { className: 'ss-btn sm', onClick: openSoulxPrompt }, '去填参考音频')) : null,
+          studioJob ? h(JobProgress, { job: studioJob, onCancel: cancelStudio }) : null,
+          studioJob?.error ? h('div', { className: 'ss-warn' }, studioJob.error) : null,
         )
       }
 
-      const renderTrain = () => {
-        const f = trainForm
-        const training = state?.training || null
-        const trainJob = job && job.type === 'train' ? job : null
-        const busy = Boolean(trainJob && (trainJob.status === 'queued' || trainJob.status === 'running'))
-        const result = busy ? null : ((trainJob && trainJob.result) || trainResult)
-        const canStart = Boolean(training?.ok) && !busy && !jobBusy && Boolean(String(f.datasetPath || '').trim()) && Boolean(String(f.name || '').trim())
-        const field = (label, control, help, wide) => h('div', { className: 'ss-field' + (wide ? ' wide' : '') },
-          h('label', null, label),
-          control,
-          help ? h('span', { className: 'ss-help' }, help) : null,
-        )
-        const numInput = (key, min, max, step) => h('input', {
-          className: 'ss-input', type: 'number', min, max, step: step || 1, value: f[key],
-          onChange: (e) => patchTrain({ [key]: e.target.value === '' ? '' : Number(e.target.value) }),
-        })
-        const select = (key, options) => h('select', {
-          className: 'ss-select', value: f[key], onChange: (e) => patchTrain({ [key]: e.target.value }),
-        }, options.map(([value, label]) => h('option', { key: value, value }, label)))
-        const toggle = (key, label) => h('label', {
-          className: 'ss-help', style: { display: 'flex', alignItems: 'center', gap: 8, minHeight: 36, cursor: 'pointer' },
-        },
-          h('input', { type: 'checkbox', checked: Boolean(f[key]), onChange: (e) => patchTrain({ [key]: e.target.checked }) }),
-          label,
-        )
-        return h(React.Fragment, null,
-          h(PageIntro, {
-            icon: ICON.train,
-            title: 'RVC训练',
-            desc: '用唱歌数据训练 RVC 音色；完成后自动生成音域 Profile，并给出可复制的权重路径。',
-            right: training
-              ? h('span', { className: 'ss-tag ' + (training.ok ? 'good' : 'warn') },
-                training.ok ? '训练环境就绪' : `缺少 ${training.missing?.length || 0} 项`)
-              : null,
-          }),
-          training && !training.ok ? h('div', { className: 'ss-warn' },
-            `训练环境还没准备好：${training.missing.map((x) => x.label).join('、')}。`,
-            h('button', { className: 'ss-btn sm', onClick: () => go('env') }, '去环境准备'),
-          ) : null,
+      const renderTimelineSettings = () => h('div', { className: 'ss-timeline-settings' },
+        h(SettingsPanel, {
+          state, draft: settingsDraft, setDraft: setSettingsDraft, onSaved: loadState, toast: notify,
+          groups: SETTING_GROUPS.filter((g) => g.page === 'timeline'),
+          title: '八度与乐句高级设置',
+          tip: '改完保存后，重新分析才会生效。',
+          inline: true, openFirst: 0,
+        }),
+      )
 
-          h(Card, {
-            title: '① 训练数据',
-            icon: ICON.upload,
-            desc: '填一个装着唱歌音频的文件夹；支持子目录，wav / flac / mp3 / m4a / ogg 都行。',
-          },
-            h('div', { className: 'ss-train-path' },
-              h('input', {
-                className: 'ss-input', placeholder: '/Users/you/datasets/my_voice',
-                value: f.datasetPath,
-                onChange: (e) => { patchTrain({ datasetPath: e.target.value }); setTrainCheck(null); setTrainMsg('') },
-                onBlur: () => { if (String(f.datasetPath || '').trim()) checkDataset(false) },
-              }),
-              h('button', { className: 'ss-btn', disabled: trainChecking, onClick: () => checkDataset(true) },
-                trainChecking ? '检查中…' : '检查目录'),
-            ),
-            trainCheck
-              ? (trainCheck.ok
-                ? h('div', { className: 'ss-train-check ok' },
-                  `找到 ${trainCheck.files} 个音频 · ${fmtMB(trainCheck.bytes)}`,
-                  trainCheck.samples?.length ? ` · 例如 ${trainCheck.samples.slice(0, 3).join('、')}` : '')
-                : h('div', { className: 'ss-train-check bad' }, trainCheck.message || '目录不可用'))
-              : h('div', { className: 'ss-help', style: { marginTop: 8 } },
-                '建议 3–15 分钟干净人声（干声最好，少混响、少伴奏）；训练数据越接近目标唱法，效果越好。'),
-            trainMsg ? h('div', { className: 'ss-train-check bad' }, trainMsg) : null,
-          ),
-
-          h(Card, {
-            title: '② 训练参数',
-            icon: ICON.settings,
-            desc: '默认值适合大多数唱歌数据；不确定就保持默认。',
-            style: { marginTop: 14 },
-          },
-            h('div', { className: 'ss-form-grid' },
-              field('模型名', h('input', {
-                className: 'ss-input', placeholder: 'my_voice', value: f.name,
-                onChange: (e) => { patchTrain({ name: e.target.value.replace(/\s+/g, '_') }); setTrainMsg('') },
-              }), '只能用字母、数字、下划线、短横线；也是 .pth 文件名和音色 id。'),
-              field('显示名（可选）', h('input', {
-                className: 'ss-input', placeholder: '例如：大肥鱼 2 号', value: f.label,
-                onChange: (e) => patchTrain({ label: e.target.value }),
-              }), '在音色下拉框里显示的名字，留空就用模型名。'),
-              field('采样率', select('sr', [['48k', '48k · 最高质量（有预训练底模）'], ['40k', '40k · 平衡'], ['32k', '32k · 更快更省']]),
-                '越高越接近原声，训练和推理也更慢；48k + v2 有官方底模，收敛最快。'),
-              field('总轮数', numInput('epochs', 1, 500), '遍历数据集的次数。默认 20；越大越像，但更慢、也容易过拟合。'),
-            ),
-            h('details', { className: 'ss-settings-section', style: { marginTop: 10 } },
-              h('summary', null,
-                h('span', { className: 'ss-settings-summary' },
-                  h('span', { className: 'ss-settings-title' }, '高级参数'),
-                  h('span', { className: 'ss-settings-desc' }, '版本 / 批大小 / 切片 / F0 / 设备 / 底模 / 索引；默认折叠'),
-                ),
-                h('span', { className: 'ss-settings-chevron' }, h(NavIcon, { d: ICON.chevron, size: 14 })),
-              ),
-              h('div', { className: 'ss-form-grid', style: { marginTop: 10 } },
-                field('模型版本', select('version', [['v2', 'v2 · 音质更好'], ['v1', 'v1 · 更省资源']]),
-                  'v2 用更大的 HuBERT 特征，音质更好；v1 更轻。'),
-                field('批大小', numInput('batchSize', 1, 32), '每步同时处理多少片段。显存/内存不够就调小，默认 4。'),
-                field('保存间隔', numInput('saveEvery', 1, 100), '每多少轮保存一次训练检查点；取消或失败时可以保留中间状态。'),
-                field('切片长度（秒）', numInput('per', 1, 10, 0.1), '每条训练片段最长几秒。太长吃显存，太短会丢上下文，默认 3.7。'),
-                field('F0 提取方法', select('f0Method', [['rmvpe', 'rmvpe · 更准（推荐）'], ['pm', 'pm · 更快']]),
-                  '人声音高提取算法；rmvpe 质量更好但更慢。'),
-                field('并行进程', numInput('nP', 1, 8), '切分音频和提取 F0 时的并行数；越小越稳，默认 2。'),
-                field('训练设备', select('device', [['auto', 'auto · 有 CUDA 用 GPU'], ['cuda', 'cuda · 强制 GPU'], ['cpu', 'cpu · 强制 CPU']]),
-                  'auto 会检测 CUDA；Apple Silicon 走 CPU，训练会比较慢。'),
-                field('预训练底模', toggle('pretrained', '使用 RVC 官方 48k 底模'),
-                  '从官方底模开始收敛快很多；取消则从零训练，需要更多轮数。'),
-                field('检索索引', toggle('index', '训练完成后构建 faiss 索引'),
-                  '索引用于相似度检索，配合设置里的「索引率」使用；不影响模型本身。'),
-              ),
-            ),
-          ),
-
-          h(Card, {
-            title: '③ 开始训练',
-            icon: ICON.spark,
-            desc: '训练会占用任务队列，切页或切到其他面板都不会中断。',
-            style: { marginTop: 14 },
-          },
-            h('div', { style: { display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' } },
-              h('button', { className: 'ss-btn primary', disabled: !canStart, onClick: startTraining },
-                busy ? '训练中…' : '开始训练'),
-              h('button', { className: 'ss-btn ghost', onClick: () => checkDataset(true), disabled: trainChecking }, '检查数据'),
-              result ? h('span', { className: 'ss-tag good' }, `最近完成：${result.label || result.voiceId || ''}`) : null,
-            ),
-            h('div', { className: 'ss-help', style: { marginTop: 8 } },
-              '训练在后台进程里跑，进度、预计剩余时间和拟合度会按 epoch 更新；取消会停掉正在训练的进程。'),
-            training && training.ok && !training.pretrainedReady && f.pretrained && f.sr === '48k' && f.version === 'v2'
-              ? h('div', { className: 'ss-warn', style: { marginTop: 8 } },
-                '缺少 48k 预训练底模（f0G48k / f0D48k）。去「环境」页一键准备，或取消「使用预训练底模」从零训练。',
-                h('button', { className: 'ss-btn sm', onClick: () => go('env') }, '去环境准备'))
-              : null,
-            state && state.deps?.devices?.rvc?.device !== 'cuda'
-              ? h('div', { className: 'ss-help', style: { marginTop: 6 } }, '当前没有检测到 CUDA，训练会走 CPU，速度会比较慢。')
-              : null,
-            trainJob ? h(TrainProgress, { job: trainJob, onCancel: cancel }) : null,
-            result ? h('div', { className: 'ss-train-result', style: { marginTop: 14 } },
-              h('div', { className: 'ss-job-top' },
-                h('span', { className: 'ss-tag good' }, '训练完成'),
-                h('span', { className: 'ss-job-stage' }, `${result.label || result.voiceId || ''} · ${result.sr || ''} ${result.version || ''}`),
-              ),
-              h('div', { className: 'ss-kv', style: { marginTop: 9 } },
-                h('span', { className: 'k' }, '权重'),
-                h('span', { className: 'v' }, result.modelPath || '—'),
-                h('span', { className: 'k' }, 'Profile'),
-                h('span', { className: 'v' }, result.profilePath || '未生成（需要手动补）'),
-                h('span', { className: 'k' }, '轮数 / 切片'),
-                h('span', { className: 'v' }, `${result.epochs || '—'} 轮 · ${result.slices || '—'} 切片`),
-                h('span', { className: 'k' }, '最终 mel loss'),
-                h('span', { className: 'v' }, result.finalLoss == null ? '—' : Number(result.finalLoss).toFixed(2)),
-                h('span', { className: 'k' }, '拟合度'),
-                h('span', { className: 'v' }, result.fit == null ? '—' : `${Number(result.fit).toFixed(1)}%`),
-                h('span', { className: 'k' }, '训练目录'),
-                h('span', { className: 'v' }, result.expDir || '—'),
-              ),
-              h('div', { style: { display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 12 } },
-                h('button', {
-                  className: 'ss-btn primary',
-                  onClick: () => { if (result.voiceId && result.profilePath) setVoiceId(result.voiceId); goStudio('songs') },
-                }, '用这个音色去制作'),
-                h('button', { className: 'ss-btn ghost', onClick: () => copyText(result.modelPath || '', '权重路径') }, '复制权重路径'),
-                result.profilePath ? h('button', { className: 'ss-btn ghost', onClick: () => copyText(result.profilePath, 'Profile 路径') }, '复制 Profile 路径') : null,
-              ),
+      const renderPlayerBar = () => {
+        if (!playableUrl) return null
+        return h('div', { className: 'ss-player', style: { margin: '12px 0 0' } },
+          h('div', { className: 'ss-player-side' },
+            h('span', { className: 'ss-player-label', title: '试听' },
+              h(NavIcon, { d: ICON.speaker, size: 16 })),
+            sourceToggle(),
+            renders.length ? h('select', {
+              className: 'ss-select ss-render-pick',
+              value: renderId || (audioSource === 'cover' ? (selectedRender?.id || '') : ''),
+              title: '选择要试听的翻唱版本',
+              onChange: (e) => {
+                const hit = renders.find((x) => x.id === e.target.value)
+                if (hit) selectRender(hit)
+              },
+            },
+              !renderId && audioSource !== 'cover' ? h('option', { value: '' }, `翻唱版本（${renders.length}）`) : null,
+              renders.map((r) => h('option', { key: r.id, value: r.id }, renderLabel(r, true))),
             ) : null,
           ),
+          h('div', { className: 'ss-player-body' },
+            h('button', {
+              type: 'button', className: 'ss-play-btn',
+              'aria-label': isPlaying ? '暂停' : '播放', title: isPlaying ? '暂停' : '播放',
+              onClick: togglePlay,
+            }, h('svg', { viewBox: '0 0 24 24', width: 14, height: 14, fill: 'currentColor', 'aria-hidden': true },
+              h('path', { d: isPlaying ? 'M7 5h4v14H7zM13 5h4v14h-4z' : 'M8 5v14l11-7z' }))),
+            h('span', { className: 'ss-player-time' }, fmtTime(playhead)),
+            h(SeekBar, {
+              value: playhead,
+              max: Math.max(1, totalDuration || 0),
+              onSeek: seekTo,
+              label: '播放进度',
+            }),
+            h('span', { className: 'ss-player-time' }, fmtTime(totalDuration || 0)),
+          ),
+          h('div', { className: 'ss-player-actions' },
+            coverMixUrl || coverUrl ? h('a', { className: 'ss-btn sm', href: coverMixUrl || coverUrl, download: 'cover.mp3' }, h(NavIcon, { d: ICON.download, size: 14 }), '下载成品') : null,
+            analysis?.songId ? h('a', { className: 'ss-btn sm ghost', href: `${API}/audio?kind=vocals&id=${analysis.songId}`, download: 'vocals.wav' }, '下载人声') : null,
+          ),
+          audioNote ? h('div', { className: 'ss-player-note' },
+            h(NavIcon, { d: ICON.alert, size: 12 }),
+            h('span', null, audioNote),
+            h('button', {
+              type: 'button', className: 'ss-btn sm ghost',
+              onClick: () => restartAudio('手动重载', playhead),
+            }, '重载音频'),
+          ) : null,
         )
       }
 
       const renderTimeline = () => {
         if (!analysis) {
           return h(React.Fragment, null,
-            h(PageIntro, { icon: ICON.timeline, title: '时间轴', desc: '分析完成后显示音高与乐句。' }),
-            h(Empty, {
-              icon: ICON.timeline,
-              title: '还没有时间轴',
-              desc: '先分析 F0。',
-              actions: h(React.Fragment, null,
-                h('button', { className: 'ss-btn primary', onClick: () => goStudio('songs') }, '去制作'),
-                h('button', { className: 'ss-btn ghost', onClick: () => go('env') }, '检查环境'),
-              ),
-            }),
+            h('div', { className: 'ss-top-grid' },
+              renderWorkbench(),
+              renderTimelineSettings(),
+            ),
+            h(Card, { title: '音高时间轴', icon: ICON.timeline, style: { marginTop: 14 } },
+              h('div', { className: 'ss-note' },
+                envReady ? '还没有分析结果；选好歌曲和音色后点「分析 F0」。' : '环境还没就绪，先去「环境」页准备。'),
+            ),
           )
         }
         if (!profile) {
           return h(React.Fragment, null,
-            h(PageIntro, { icon: ICON.timeline, title: '时间轴', desc: '缺少音色音域数据。' }),
-            h(Empty, {
-              icon: ICON.alert,
-              title: '音色 profile 不完整',
-              desc: '换一个已校准的音色试试。',
-              actions: h('button', { className: 'ss-btn primary', onClick: () => goStudio('songs') }, '换音色'),
-            }),
+            h('div', { className: 'ss-top-grid' },
+              renderWorkbench(),
+              renderTimelineSettings(),
+            ),
+            h(Card, { title: '音高时间轴', icon: ICON.timeline, style: { marginTop: 14 } },
+              h('div', { className: 'ss-warn' },
+                '当前音色的 Profile 不完整（缺音域统计），换一个已校准的音色再分析。',
+                h('button', { className: 'ss-btn sm', onClick: () => goStudio('songs') }, '去换音色')),
+            ),
           )
         }
         const origCov = coverageFor({ shifts: [] }, rangeProfile)
         const planCov = activePlan ? coverageFor(activePlan, rangeProfile) : null
+        const summary = h('div', { className: 'ss-pills', style: { justifyContent: 'flex-end', maxWidth: '100%' } },
+          h('span', {
+            className: 'ss-pill',
+            title: `当前音色舒适区 ${noteName(rangeProfile.p5)}–${noteName(rangeProfile.p95)}，极限区 ${noteName(rangeProfile.p1)}–${noteName(rangeProfile.p99)}`,
+          }, `音域 ${noteName(rangeProfile.p5)}–${noteName(rangeProfile.p95)}`),
+          h('span', {
+            className: 'ss-pill ' + ((origCov ?? 0) >= (plans?.target ?? 0.95) ? 'ok' : ''),
+            title: '按 RMS 加权的舒适区覆盖率',
+          }, `原曲 ${origCov == null ? '—' : pct(origCov)}`),
+          activePlan ? h('span', {
+            className: 'ss-pill ' + ((planCov ?? 0) >= (plans?.target ?? 0.95) ? 'ok' : ''),
+            title: '按当前八度方案重新计算；目标 ' + pct(plans?.target ?? 0.95),
+          }, `方案 ${pct(planCov)}`) : null,
+          activePlan ? h('span', { className: 'ss-pill', title: '换八度的段落数' }, `变调 ${selected?.changes ?? activePlan.changes ?? 0}`) : null,
+          selected?.unresolved?.length ? h('span', { className: 'ss-pill', title: '仍在极限区外的乐句数' }, `未解决 ${selected.unresolved.length}`) : null,
+          phrases.length ? h('span', { className: 'ss-pill' }, `${phrases.length} 句`) : null,
+        )
         return h(React.Fragment, null,
-          h(PageIntro, {
+          h('div', { className: 'ss-top-grid' },
+            renderWorkbench(),
+            renderTimelineSettings(),
+          ),
+          h(Card, {
+            title: '音高时间轴',
+            style: { marginTop: 14 },
             icon: ICON.timeline,
-            title: '时间轴',
-            desc: '点乐句高亮并试听；拖动时间轴可定位。',
-            right: h('div', { className: 'ss-pills' },
-              h('span', { className: 'ss-pill ok' }, `${analysis.sections?.length || 0} 段`),
-              h('span', { className: 'ss-pill' }, `${analysis.phrases?.length || 0} 乐句`),
-              h('span', { className: 'ss-pill ' + (onCover ? 'ok' : '') },
-                onCover && selectedRender ? `翻唱 · ${renderBase(selectedRender)}` : '原曲'),
-              onCover && activePlan && activePlan.label ? h('span', { className: 'ss-pill' }, activePlan.label) : null,
-            ),
-          }),
-          h('div', { className: 'ss-grid ss-main-side' },
-            h(Card, {
-              title: '音高时间轴',
-              icon: ICON.timeline,
-              right: h('span', { className: 'ss-tag' }, `${phrases.length} 句`),
-            },
+            tip: '点乐句高亮并试听；拖动时间轴或进度条定位。',
+            right: summary,
+          },
               h('div', { className: 'ss-legend', style: { marginTop: 0, marginBottom: 8 } },
                 h('span', null, h('i', { style: { background: 'var(--dsw-alias-brand-primary)' } }), '舒适区 F0'),
                 h('span', null, h('i', { style: { background: 'var(--dsw-alias-state-warn-primary)' } }), '极限区内'),
@@ -3479,6 +4059,7 @@ window.__ModuleLoader__.load({
                 analysis, plan: activePlan, profile: rangeProfile, playhead, phrase: activePhraseObj,
                 onSeek: seekTo,
               }),
+              renderPlayerBar(),
               h('div', { className: 'ss-phrase-bar' },
                 h('button', {
                   type: 'button', className: 'ss-phrase' + (activePhrase < 0 ? ' on' : ''),
@@ -3494,88 +4075,51 @@ window.__ModuleLoader__.load({
                   h('span', null, `${fmtShort(p.start)}–${fmtShort(p.end)}`),
                 )),
               ),
-              h('div', { className: 'ss-phrase-info' },
-                h('span', { className: 'ss-note' },
-                  activePhraseObj
-                    ? `第 ${activePhrase + 1} 句 · ${fmtTime(activePhraseObj.start)} – ${fmtTime(activePhraseObj.end)}`
-                    : phrases.length ? '点乐句试听该句' : '这首歌没有切出乐句',
-                ),
-                h('div', { style: { display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' } },
-                  sourceToggle(),
-                  analysis.songId
-                    ? h('a', { className: 'ss-btn sm ghost', href: `${API}/audio?kind=vocals&id=${analysis.songId}`, download: 'vocals.wav' }, '下载人声')
-                    : null,
-                ),
-              ),
+              (activePhraseObj || !phrases.length) ? h('div', { className: 'ss-phrase-info' },
+                activePhraseObj
+                  ? h('span', { className: 'ss-note' },
+                    `第 ${activePhrase + 1} 句 · ${fmtTime(activePhraseObj.start)} – ${fmtTime(activePhraseObj.end)}`)
+                  : h('span', { className: 'ss-note' }, '这首歌没有切出乐句'),
+              ) : null,
             ),
-            h(Card, { title: '音色区间', icon: ICON.studio },
-              h('div', { className: 'ss-note' },
-                onCover && renderVoice ? `${renderVoice.label}${activePlan?.label ? ` · ${activePlan.label}` : ''}` : '当前音色',
-                h('br'),
-                `舒适区 ${noteName(rangeProfile.p5)}–${noteName(rangeProfile.p95)}`, h('br'),
-                `极限区 ${noteName(rangeProfile.p1)}–${noteName(rangeProfile.p99)}`,
-              ),
-              h('div', { className: 'ss-check' },
-                h('span', { className: 'ss-tag ' + ((origCov ?? 0) >= (plans?.target ?? 0.95) ? 'good' : 'warn') },
-                  `原曲覆盖 ${origCov == null ? '—' : pct(origCov)}`),
-                planCov == null ? null : h('span', { className: 'ss-tag ' + (planCov >= (plans?.target ?? 0.95) ? 'good' : 'warn') },
-                  `方案覆盖 ${pct(planCov)}`),
-              ),
-              h('div', { className: 'ss-note', style: { marginTop: 10 } },
-                renders.length
-                  ? `播放条可切换原曲 / 已缓存的 ${renders.length} 个翻唱版本，这里的音域和变调会跟着变。`
-                  : '生成翻唱后可在播放条切换原曲 / 翻唱。',
-              ),
-            ),
-          ),
+          renderPlansSection(),
         )
       }
 
-      const renderPlans = () => {
-        if (!analysis) {
-          return h(React.Fragment, null,
-            h(PageIntro, { icon: ICON.plans, title: '方案', desc: '对比不同八度策略。' }),
-            h(Empty, {
-              icon: ICON.plans,
-              title: '还没有方案',
-              desc: '先分析人声 F0。',
-              actions: h('button', { className: 'ss-btn primary', onClick: () => goStudio('songs') }, '去分析'),
-            }),
-          )
-        }
+      const renderPlansSection = () => {
+        if (!analysis) return null
         if (!plans) {
-          return h(React.Fragment, null,
-            h(PageIntro, { icon: ICON.plans, title: '方案', desc: '分析已完成，生成八度方案。', right: h('span', { className: 'ss-tag good' }, `原曲覆盖 ${pct(analysis.coverage?.comfort)}`) }),
-            h(Empty, {
-              icon: ICON.spark,
-              title: '生成第一组方案',
-              desc: '自动比较几种八度策略。',
-              actions: h('button', { className: 'ss-btn primary', onClick: plan, disabled: !envReady || jobBusy }, envReady ? '生成方案' : '环境未准备'),
-            }),
+          return h('div', { id: 'ss-plans', style: { marginTop: 14 } },
+            h(Card, {
+              title: '方案对比',
+              icon: ICON.plans,
+              tip: '生成后会列出候选八度策略，并比较覆盖率与变调次数。',
+              right: h('span', { className: 'ss-tag good' }, `原曲覆盖 ${pct(analysis.coverage?.comfort)}`),
+            },
+              h('button', { className: 'ss-btn primary', onClick: plan, disabled: !envReady || studioBusy }, envReady ? '生成方案' : '环境未准备'),
+            ),
           )
         }
-        return h(React.Fragment, null,
-          h(PageIntro, {
-            icon: ICON.plans,
-            title: '方案',
-            desc: '选覆盖最高、变调最少的方案。',
-            right: h('div', { className: 'ss-pills' },
-              h('span', { className: 'ss-pill ok' }, `目标 ${pct(plans.target)}`),
-              h('span', { className: 'ss-pill' }, `${plans.table.length} 个候选`),
-            ),
-          }),
-          h('div', { className: 'ss-grid ss-main-side' },
-            h(Card, { title: '方案对比', icon: ICON.plans },
-              h('div', { className: 'ss-table-wrap' },
+        return h('div', { id: 'ss-plans', style: { marginTop: 14 } },
+            h(Card, {
+              title: '方案对比',
+              icon: ICON.plans,
+              tip: '同一首歌可以生成多个方案；每个方案的成品会单独缓存。',
+              right: h('div', { className: 'ss-pills' },
+                h('span', { className: 'ss-pill ok', title: '规划目标覆盖率' }, `目标 ${pct(plans.target)}`),
+                h('span', { className: 'ss-pill' }, `${plans.table.length} 个候选`),
+              ),
+            },
+              h('div', { className: 'ss-table-wrap', style: { maxWidth: '100%' } },
                 h('table', { className: 'ss-table' },
                   h('thead', null, h('tr', null,
                     h('th', null, ''),
                     h('th', null, '策略'),
-                    h('th', null, '舒适覆盖'),
-                    h('th', null, '极限覆盖'),
-                    h('th', null, '变调'),
-                    h('th', null, '未解决'),
-                    h('th', null, '成品'),
+                    h('th', { title: '落在音色舒适区（p5–p95）的加权比例' }, '舒适覆盖'),
+                    h('th', { title: '落在音色极限区（p1–p99）的加权比例' }, '极限覆盖'),
+                    h('th', { title: '换八度的段落数' }, '变调'),
+                    h('th', { title: '仍在极限区外的乐句数' }, '未解决'),
+                    h('th', { title: '已缓存的成品；点「试听」直接播放' }, '成品'),
                   )),
                   h('tbody', null, plans.table.map((row) => {
                     const cached = renderForRow(row)
@@ -3614,39 +4158,20 @@ window.__ModuleLoader__.load({
               selected?.unresolved?.length ? h('div', { className: 'ss-note', style: { marginTop: 8 } },
                 '仍越界的乐句：' + selected.unresolved.slice(0, 6).map((u) => `${fmtTime(u.start)}–${fmtTime(u.end)}（${pct(u.coverage)}）`).join('、') + (selected.unresolved.length > 6 ? ' …' : ''),
               ) : null,
-              h('div', { className: 'ss-note', style: { marginTop: 8 } },
-                renders.length
-                  ? `已缓存 ${renders.length} 个翻唱版本，点「试听」或播放条右侧的下拉框可以切换。`
-                  : '每个方案生成后都会单独缓存，之后可以直接试听对比。',
-              ),
               h('div', { style: { display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 12 } },
                 h('button', {
                   className: 'ss-btn primary', onClick: render,
-                  disabled: !envReady || !selected || jobBusy || (backend === 'soulx' && (!soulxReady || !promptReady)),
+                  disabled: !envReady || !selected || studioBusy || (backend === 'soulx' && (!soulxReady || !promptReady)),
                 }, '用这个方案生成'),
                 renderForRow(selected) ? h('span', { className: 'ss-tag good' }, '已缓存') : null,
-                h('button', { className: 'ss-btn ghost', onClick: plan, disabled: !envReady || jobBusy }, '重新规划'),
+                h('button', { className: 'ss-btn ghost', onClick: plan, disabled: !envReady || studioBusy }, '重新规划'),
               ),
-              job ? h(JobProgress, { job, onCancel: cancel }) : null,
-              job?.error ? h('div', { className: 'ss-warn' }, job.error) : null,
+              (() => {
+                const active = (renderJobs || []).find((j) => j.status === 'running' || j.status === 'queued')
+                return active ? h(JobProgress, { job: active, onCancel: () => cancelRenderJob(active.id) }) : null
+              })(),
             ),
-            h('div', null,
-              h(Card, { title: '当前方案', icon: ICON.check },
-                selected ? h(React.Fragment, null,
-                  h('div', { className: 'ss-metric', style: { marginBottom: 10 } },
-                    h('div', { className: 'k' }, '舒适区覆盖'),
-                    h('div', { className: 'v', style: { color: selected.coverage.comfort >= (plans.target ?? 0.95) ? 'var(--dsw-alias-state-success-primary)' : undefined } }, pct(selected.coverage.comfort)),
-                    h('div', { className: 'h' }, `${selected.label} · 变调 ${selected.changes} 次`),
-                  ),
-                  h('div', { className: 'ss-note' }, `未解决乐句：${selected.unresolved?.length || 0}`),
-                  backend === 'soulx' ? h('div', { className: 'ss-note', style: { marginTop: 8 } },
-                    'SoulX 零样本：用 promptWav 参考，首次加载 1–2 分钟。',
-                  ) : null,
-                ) : h('div', { className: 'ss-note' }, '还没有选中方案。'),
-              ),
-            ),
-          ),
-        )
+          )
       }
 
       const renderEnv = () => {
@@ -3656,10 +4181,36 @@ window.__ModuleLoader__.load({
         const downloadMinutes = missingBytes > 0 ? Math.max(1, Math.round(missingBytes / (5 * 1024 * 1024) / 60)) : 0
         const readyFiles = manifest.filter((e) => e.present)
         const resumable = missingFiles.filter((e) => Number(e.partial) > 0).length
-        const statusTag = h('span', { className: 'ss-tag ' + (state ? (envReady ? 'good' : 'warn') : '') },
-          state ? (envReady ? '全部就绪' : `还缺 ${deps.missing?.length || 0} 项`) : '检查中…')
         const rvcLoaded = Boolean(state?.workers?.rvc?.started)
         const soulxLoaded = Boolean(state?.workers?.soulx?.started)
+        const deviceOf = (which) => {
+          const worker = state?.workers?.[which]
+          const warm = warmups[which]
+          const started = Boolean(worker?.started || warm?.status === 'done')
+          if (!started) return { label: 'auto（待加载）', title: '实际加载后显示 GPU / CPU' }
+          const device = String(worker?.device || warm?.device || '')
+          const gpu = String(worker?.gpu || '')
+          if (device === 'cuda') return { label: 'auto（GPU）', title: gpu ? `GPU · ${gpu}` : 'GPU' }
+          if (device === 'mps') return { label: 'auto（Apple GPU）', title: 'Apple GPU' }
+          if (device === 'cpu') return { label: 'auto（CPU）', title: 'CPU' }
+          return { label: 'auto', title: device || '设备检测中' }
+        }
+        const rvcDevice = deviceOf('rvc')
+        const soulxDevice = deviceOf('soulx')
+        const rvcLoadedModel = String(state?.workers?.rvc?.model || '')
+        const rvcVoices = voices.filter((v) => v.usable && v.kind !== 'soulx' && v.file)
+        const selectedRvc = rvcVoices.find((v) => v.id === voiceId) || null
+        const chooseRvcVoice = (id) => {
+          setVoiceId(id)
+          setAnalysis(null)
+          setAnalysisId('')
+          setPlans(null)
+          setSelectedId('')
+          setAudioUrl('')
+          setRenderId('')
+          setPlayhead(0)
+          setActivePhrase(-1)
+        }
         const failedText = setupFailed ? String(job?.error || '') : ''
         const failedEntry = failedText
           ? manifest.find((e) => !e.present && ((e.urls || []).some((u) => failedText.includes(u)) || failedText.includes(e.label)))
@@ -3672,49 +4223,42 @@ window.__ModuleLoader__.load({
           uploading: envUpload, onUpload: uploadEnvFile, onCopy: copyText,
         })
         return h(React.Fragment, null,
-          h(PageIntro, {
-            icon: ICON.env,
-            title: '环境安装',
-            desc: '首次使用直接点「一键安装」即可；依赖清单默认收起，下载失败时会展开对应文件的下载链接和放置框。',
-            right: statusTag,
-          }),
-
           h(Card, {
             title: '一键安装',
             icon: ICON.download,
-            desc: '首次约 5–15 分钟，取决于网速和是否已有缓存；安装路径由插件自动管理，中途退出可以再点一次继续。',
-            right: statusTag,
+            tip: '首次约 5–15 分钟；已完成的步骤和已下载文件会跳过，中断后再点一次继续。',
           },
             h('div', { style: { display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' } },
               h('button', { className: 'ss-btn primary', onClick: startSetup, disabled: jobBusy },
                 setupBusy ? '安装中…' : (envReady ? '重新检查 / 补装' : '一键安装 / 继续安装')),
               h('button', { className: 'ss-btn ghost', onClick: checkEnv, disabled: jobBusy || setupBusy }, '重新检查环境'),
             ),
-            h('div', { className: 'ss-help', style: { marginTop: 8 } },
+            (missingFiles.length || resumable) ? h('div', {
+              className: 'ss-help', style: { marginTop: 8, display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' },
+            },
               missingFiles.length
-                ? `还有 ${missingFiles.length} 个文件待下载${missingBytes ? `（${fmtMB(missingBytes)}，按 5 MB/s 约 ${downloadMinutes} 分钟）` : ''}；` : (envReady ? '下载项都已就位；' : ''),
-              missingBytes ? '另需依赖安装时间；' : '',
-              resumable ? `其中 ${resumable} 个已有 .part 断点；` : '',
-              '已完成的步骤会跳过，下载使用 .part 文件断点续传，中断后重新点「一键安装」即可继续。'),
+                ? `待下载 ${missingFiles.length} 个文件${missingBytes ? ` · ${fmtMB(missingBytes)} · 约 ${downloadMinutes} 分钟` : ''}`
+                : '',
+              resumable ? ` · ${resumable} 个可续传` : '',
+              h(Tip, { tip: '已完成的步骤会跳过；下载使用 .part 断点续传，中断后再点一次即可继续。', up: true },
+                h(NavIcon, { d: ICON.info, size: 12 })),
+            ) : null,
             job && job.type === 'setup' ? h(JobProgress, { job, onCancel: cancel }) : null,
             job?.type === 'setup' && job.error ? h('div', { className: 'ss-warn' }, job.error) : null,
             state && !envReady ? h('div', { className: 'ss-warn', style: { marginTop: 8 } },
               `环境还缺 ${deps.missing?.length || 0} 项：${deps.missing.map((x) => x.label).join('、')}`) : null,
           ),
 
-          h('div', { className: 'ss-grid ss-main-side', style: { marginTop: 14 } },
-            h(Card, {
+          h(Card, {
               title: '依赖清单',
               icon: ICON.env,
-              desc: '必选项全部就绪后，分析和生成才会开放；默认收起，不影响一键安装。',
-              right: statusTag,
+              tip: '必选项全部就绪后，分析和生成才会开放。',
+              style: { marginTop: 14 },
             },
               h('details', { className: 'ss-settings-section' },
                 h('summary', null,
                   h('span', { className: 'ss-settings-summary' },
                     h('span', { className: 'ss-settings-title' }, `全部依赖（${(deps.items || []).length} 项）`),
-                    h('span', { className: 'ss-settings-desc' },
-                      state ? (envReady ? '全部就绪' : `还缺 ${deps.missing?.length || 0} 项，点开查看`) : '检查中…'),
                   ),
                   h('span', { className: 'ss-settings-chevron' }, h(NavIcon, { d: ICON.chevron, size: 14 })),
                 ),
@@ -3732,14 +4276,20 @@ window.__ModuleLoader__.load({
                 ),
               ),
             ),
-            h(Card, { title: '设备与常驻', icon: ICON.settings },
+            h(Card, {
+              title: '设备与常驻',
+              icon: ICON.settings,
+              tip: '预加载后模型常驻，分析和生成会复用；可以单独卸载。',
+              style: { marginTop: 14 },
+            },
               h('div', { className: 'ss-device-grid' },
                 h('div', { className: 'ss-device' },
                   h('div', { className: 'k' }, 'RVC 推理设备'),
-                  h('div', { className: 'v' }, state?.deps?.devices?.rvc?.device === 'cuda' ? `CUDA${state.deps.devices.rvc.gpu ? ' · ' + state.deps.devices.rvc.gpu : ''}` : state?.deps?.devices?.rvc?.device === 'mps' ? 'Apple GPU（mps）' : 'CPU'),
-                  h('div', { className: 'h' }, rvcLoaded ? 'Worker 已加载' : 'Worker 未加载'),
+                  h('div', { className: 'v', title: rvcDevice.title }, rvcDevice.label),
+                  h('div', { className: 'h' }, rvcLoaded ? '模型已加载' : '模型未加载'),
                   h(DeviceActions, {
                     backend: 'rvc', warmup: warmups.rvc, loaded: rvcLoaded,
+                    loadedModel: rvcLoadedModel, selectedModel: selectedRvc?.file || '',
                     busy: Boolean(jobBusy || warmupBusy), unloading: Boolean(unloading.rvc),
                     onPreload: () => preload('rvc'),
                     onStop: () => stopWarmup('rvc'),
@@ -3748,8 +4298,8 @@ window.__ModuleLoader__.load({
                 ),
                 h('div', { className: 'ss-device' },
                   h('div', { className: 'k' }, 'SoulX 推理设备'),
-                  h('div', { className: 'v' }, state?.deps?.devices?.soulx?.device === 'cuda' ? `CUDA${state.deps.devices.soulx.gpu ? ' · ' + state.deps.devices.soulx.gpu : ''}` : state?.deps?.devices?.soulx?.device === 'mps' ? 'Apple GPU（mps）' : 'CPU'),
-                  h('div', { className: 'h' }, soulxLoaded ? 'Worker 已加载' : 'Worker 未加载'),
+                  h('div', { className: 'v', title: soulxDevice.title }, soulxDevice.label),
+                  h('div', { className: 'h' }, soulxLoaded ? '模型已加载' : '模型未加载'),
                   h(DeviceActions, {
                     backend: 'soulx', warmup: warmups.soulx, loaded: soulxLoaded,
                     busy: Boolean(jobBusy || warmupBusy), unloading: Boolean(unloading.soulx),
@@ -3760,17 +4310,29 @@ window.__ModuleLoader__.load({
                 ),
                 h('div', { className: 'ss-device' },
                   h('div', { className: 'k' }, '音色模型'),
-                  h('div', { className: 'v' }, `${voices.length} 个`),
-                  h('div', { className: 'h' }, voices.filter((v) => v.calibrated).length + ' 个已校准'),
+                  rvcVoices.length
+                    ? h('select', {
+                      className: 'ss-select', value: selectedRvc?.id || '',
+                      onChange: (e) => chooseRvcVoice(e.target.value),
+                      title: selectedRvc?.file || '选择 RVC 音色后，预加载会加载它',
+                    },
+                      h('option', { value: '' }, '选择 RVC 音色…'),
+                      rvcVoices.map((v) => h('option', { key: v.id, value: v.id },
+                        `${v.label} · ${noteName(v.profile.p5)}–${noteName(v.profile.p95)}`)),
+                    )
+                    : h('div', { className: 'v' }, '无可用 RVC 音色'),
+                  h('div', { className: 'h' },
+                    selectedRvc
+                      ? `预加载会加载：${selectedRvc.fileName || selectedRvc.id}`
+                      : '先选择 RVC 音色，再点预加载'),
                 ),
               ),
             ),
-          ),
 
           h(Card, {
             title: '手动下载 / 离线安装',
             icon: ICON.download,
-            desc: '网络不稳时自己下载：把文件拖进对应框，插件会直接放进目标路径。',
+            tip: '网络不稳时自己下载：把文件拖进对应框，插件会直接放进目标路径。',
             right: h('button', { className: 'ss-btn sm ghost', onClick: () => loadManifest(), disabled: envManifestLoading },
               envManifestLoading ? '读取中…' : '刷新清单'),
             style: { marginTop: 14 },
@@ -3778,7 +4340,7 @@ window.__ModuleLoader__.load({
             setupFailed ? h('div', { className: 'ss-warn' },
               h('div', null, `一键安装中断：${failedText.slice(-300) || '未知错误'}`),
               h('div', { className: 'ss-help', style: { marginTop: 4 } },
-                '下载部分文件失败时，可以按下面的下载线路自己下载；速度慢可以在「设置 → 下载」里填代理。'),
+                '可以按下面的线路手动下载；速度慢可在插件数据目录的 settings.json 设置 proxy。'),
               h('div', { style: { marginTop: 8, display: 'flex', gap: 8, flexWrap: 'wrap' } },
                 h('button', { className: 'ss-btn sm', onClick: startSetup, disabled: jobBusy }, '重试一键安装'),
                 h('button', { className: 'ss-btn sm ghost', onClick: checkEnv, disabled: jobBusy }, '重新检查环境'),
@@ -3796,7 +4358,7 @@ window.__ModuleLoader__.load({
                   h('span', { className: 'ss-settings-title' }, `待下载文件（${missingFiles.length}）`),
                   h('span', { className: 'ss-settings-desc' },
                     missingFiles.length
-                      ? `${missingBytes ? fmtMB(missingBytes) + ' · ' : ''}展开后可下载，或把已下载的文件拖进对应框`
+                      ? fmtMB(missingBytes)
                       : (manifest.length ? '当前都已就位' : '正在读取下载清单…')),
                 ),
                 h('span', { className: 'ss-settings-chevron' }, h(NavIcon, { d: ICON.chevron, size: 14 })),
@@ -3809,7 +4371,6 @@ window.__ModuleLoader__.load({
                   h('summary', null,
                     h('span', { className: 'ss-settings-summary' },
                       h('span', { className: 'ss-settings-title' }, `已就位文件（${readyFiles.length}）`),
-                      h('span', { className: 'ss-settings-desc' }, '展开可以复制路径或重新下载'),
                     ),
                     h('span', { className: 'ss-settings-chevron' }, h(NavIcon, { d: ICON.chevron, size: 14 })),
                   ),
@@ -3822,14 +4383,8 @@ window.__ModuleLoader__.load({
       }
 
       const renderSettings = () => h(React.Fragment, null,
-        h(PageIntro, {
-          icon: ICON.settings,
-          title: '设置',
-          desc: '通用行为与下载代理；安装路径由插件自动管理。',
-          right: h('span', { className: 'ss-tag' }, state ? (state.settings?.mode === 'existing' ? 'existing 模式' : 'managed 模式') : '读取中…'),
-        }),
-        h(Card, { title: '数据与位置', icon: ICON.info },
-          h('div', { className: 'ss-kv', style: { marginTop: 0 } },
+        h(Card, { title: '数据与位置', icon: ICON.env },
+          h('div', { className: 'ss-kv' },
             h('span', { className: 'k' }, '插件数据目录'),
             h('span', { className: 'v' }, state?.dataDir || '—'),
             h('span', { className: 'k' }, '音色模型目录'),
@@ -3837,20 +4392,17 @@ window.__ModuleLoader__.load({
           ),
           h('div', { style: { display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 10 } },
             h('button', { className: 'ss-btn sm ghost', onClick: () => copyText(state?.dataDir || '', '数据目录') }, '复制数据目录'),
-            h('button', { className: 'ss-btn sm ghost', onClick: () => go('env') }, '环境安装'),
-            h('button', { className: 'ss-btn sm ghost', onClick: () => go('train') }, 'RVC训练'),
-            h('button', { className: 'ss-btn sm ghost', onClick: () => goStudio('songs') }, '制作台'),
           ),
         ),
         h(SettingsPanel, {
           state, draft: settingsDraft, setDraft: setSettingsDraft, onSaved: loadState, toast: notify,
           groups: SETTING_GROUPS.filter((g) => g.page === 'settings'),
           title: '通用设置',
-          desc: '只保留全局行为；训练和制作参数在对应页面。',
+          tip: '训练和制作参数在对应页面。',
         }),
       )
 
-      const STUDIO_TABS = [['songs', '歌曲库'], ['timeline', '音高时间轴'], ['plans', '八度方案']]
+      const STUDIO_TABS = [['songs', '歌曲库'], ['timeline', '音高时间轴']]
       const renderStudioPage = () => h(React.Fragment, null,
         h('div', { className: 'ss-tabs', role: 'tablist', 'aria-label': '制作台视图' },
           STUDIO_TABS.map(([id, label]) => h('button', {
@@ -3860,7 +4412,7 @@ window.__ModuleLoader__.load({
             onClick: () => setStudioView(id),
           }, label)),
         ),
-        studioView === 'timeline' ? renderTimeline() : studioView === 'plans' ? renderPlans() : renderStudio(),
+        studioView === 'timeline' ? renderTimeline() : renderStudio(),
       )
 
       const body = page === 'env'
@@ -3875,70 +4427,34 @@ window.__ModuleLoader__.load({
         h('style', null, cssText),
         h('div', { className: 'ss-inner' },
           h('div', { className: 'ss-hero' },
-            h('span', { className: 'ss-hero-mark' }, h(WhaleIcon, { size: 32 })),
+            h('span', { className: 'ss-hero-mark' }, h(WhaleIcon, { size: 30 })),
             h('div', { className: 'ss-hero-body' },
-              h('div', { className: 'ss-eyebrow' }, 'Virtual Singer · Singing Studio'),
-              h('h1', { className: 'ss-title' }, '唱歌工作室'),
-              h('p', { className: 'ss-sub' }, '上传歌曲 → 分析音高 → 自动定八度 → 生成翻唱。只改人声，伴奏不动。'),
-              h('div', { className: 'ss-hero-tags' },
-                h('span', { className: 'ss-chip' }, h('i', { className: 'ss-mini-dot' + (song ? ' ok' : '') }), '歌曲', h('b', null, song ? song.name : '未选择')),
-                h('span', { className: 'ss-chip' }, h('i', { className: 'ss-mini-dot' + (voice ? ' ok' : '') }), '音色', h('b', null, voice ? voice.label : '未选择')),
-                h('span', { className: 'ss-chip' }, h('i', { className: 'ss-mini-dot' + (backend === 'rvc' ? ' ok' : '') }), '后端', h('b', null, backend === 'soulx' ? 'SoulX-SVC' : 'RVC')),
-                h('span', { className: 'ss-chip' }, h('i', { className: 'ss-mini-dot' + (audioUrl ? ' ok' : '') }), '成品', h('b', null, audioUrl ? '可试听' : '未生成')),
-              ),
-            ),
-            h('div', { className: 'ss-hero-side' },
-              h('div', { className: 'ss-pills' },
-                state ? [
-                  h('span', { key: 'env', className: 'ss-pill ' + (envReady ? 'ok' : 'bad') }, envReady ? '环境已就绪' : `环境缺 ${deps.missing?.length || 0} 项`),
-                  h('span', { key: 'rvc', className: 'ss-pill ' + (state.settings?.checks?.rvc ? 'ok' : 'bad') }, state.settings?.checks?.rvc ? 'RVC 就绪' : 'RVC 缺失'),
-                  h('span', { key: 'sep', className: 'ss-pill ' + (state.settings?.checks?.separator && state.settings?.checks?.separatorModels ? 'ok' : 'bad') }, state.settings?.checks?.separator && state.settings?.checks?.separatorModels ? '分离器就绪' : '分离器未配置'),
-                  h('span', { key: 'soulx', className: 'ss-pill ' + (soulxReady ? 'ok' : 'bad') }, soulxReady ? 'SoulX 就绪' : 'SoulX 未安装'),
-                ] : h('span', { className: 'ss-pill' }, '正在读取状态…'),
-              ),
-              h('span', { className: 'ss-version' }, `v${state?.version || '0.1.0'}`),
+              h('h1', { className: 'ss-title' }, '唱歌工作室', h('span', { className: 'ss-version' }, `v${state?.version || '0.1.0'}`)),
+              h('p', { className: 'ss-sub' }, '音色训练 · 八度规划 · 翻唱制作'),
             ),
           ),
           h('nav', { className: 'ss-nav', 'aria-label': '唱歌工作室页面' },
-            PAGES.map((p) => h('button', {
-              key: p.id, type: 'button',
-              className: 'ss-nav-card' + (page === p.id ? ' on' : ''),
-              'aria-current': page === p.id ? 'page' : undefined,
-              onClick: () => go(p.id),
-            },
-              h('span', { className: 'ss-nav-icon' }, h(NavIcon, { d: p.icon, size: 18 })),
-              h('span', { className: 'ss-nav-copy' },
-                h('span', { className: 'ss-nav-label' }, p.label),
-                h('span', { className: 'ss-nav-hint' }, navHint(p.id)),
-              ),
-            )),
-          ),
-          playableUrl ? h('div', {
-            className: 'ss-player',
-            style: page === 'studio' ? undefined : { display: 'none' },
-            'aria-hidden': page === 'studio' ? undefined : 'true',
-          },
-            h('div', { className: 'ss-player-side' },
-              h('span', { className: 'ss-player-label' },
-                h(NavIcon, { d: ICON.speaker, size: 16 }),
-                audioSource === 'cover' && coverUrl
-                  ? (selectedRender ? `翻唱 · ${renderLabel(selectedRender)}` : '翻唱试听')
-                  : '原曲试听'),
-              sourceToggle(),
-              renders.length ? h('select', {
-                className: 'ss-select ss-render-pick',
-                value: renderId || (audioSource === 'cover' ? (selectedRender?.id || '') : ''),
-                title: '选择要试听的翻唱版本',
-                onChange: (e) => {
-                  const hit = renders.find((x) => x.id === e.target.value)
-                  if (hit) selectRender(hit)
-                },
+            PAGES.map((p) => {
+              const st = navStatus(p.id)
+              return h('button', {
+                key: p.id, type: 'button',
+                className: 'ss-nav-card' + (page === p.id ? ' on' : ''),
+                'aria-current': page === p.id ? 'page' : undefined,
+                title: st.text ? `${p.tip} · ${st.text}` : p.tip,
+                onClick: () => go(p.id),
               },
-                !renderId && audioSource !== 'cover' ? h('option', { value: '' }, `翻唱版本（${renders.length}）`) : null,
-                renders.map((r) => h('option', { key: r.id, value: r.id }, renderLabel(r, true))),
-              ) : null,
-            ),
-            h('audio', {
+                h('span', { className: 'ss-nav-icon' },
+                  h(NavIcon, { d: p.icon, size: 18 }),
+                  st.tone ? h('i', { className: 'ss-nav-dot ' + st.tone }) : null),
+                h('span', { className: 'ss-nav-copy' },
+                  h('span', { className: 'ss-nav-label' }, p.label),
+                  st.text ? h('span', { className: 'ss-nav-hint' }, st.text) : null,
+                ),
+              )
+            }),
+          ),
+          h('div', { style: { display: 'none' }, 'aria-hidden': 'true' },
+            playableUrl ? h('audio', {
               ref: audioRef, key: 'audio-' + audioEpoch, src: playableUrl, preload: 'auto',
               onTimeUpdate: onAudioTime,
               onLoadedMetadata: onAudioMeta,
@@ -3951,42 +4467,57 @@ window.__ModuleLoader__.load({
               onPause: () => setIsPlaying(false),
               onEnded: () => { setIsPlaying(false); wantPlayRef.current = false; stopAtRef.current = null; pendingSeekRef.current = null },
               onError: onAudioError,
-            }),
-            h('div', { className: 'ss-player-body' },
-              h('button', {
-                type: 'button', className: 'ss-play-btn',
-                'aria-label': isPlaying ? '暂停' : '播放', title: isPlaying ? '暂停' : '播放',
-                onClick: togglePlay,
-              }, h('svg', { viewBox: '0 0 24 24', width: 14, height: 14, fill: 'currentColor', 'aria-hidden': true },
-                h('path', { d: isPlaying ? 'M7 5h4v14H7zM13 5h4v14h-4z' : 'M8 5v14l11-7z' }))),
-              h('span', { className: 'ss-player-time' }, fmtTime(playhead)),
-              h(SeekBar, {
-                value: playhead,
-                max: Math.max(1, totalDuration || 0),
-                onSeek: seekTo,
-                label: '播放进度',
-              }),
-              h('span', { className: 'ss-player-time' }, fmtTime(totalDuration || 0)),
-            ),
-            h('div', { className: 'ss-player-actions' },
-              coverMixUrl || coverUrl ? h('a', { className: 'ss-btn sm', href: coverMixUrl || coverUrl, download: 'cover.mp3' }, h(NavIcon, { d: ICON.download, size: 14 }), '下载成品') : null,
-              analysis?.songId ? h('a', { className: 'ss-btn sm ghost', href: `${API}/audio?kind=vocals&id=${analysis.songId}`, download: 'vocals.wav' }, '下载人声') : null,
-            ),
-            audioNote ? h('div', { className: 'ss-player-note' },
-              h(NavIcon, { d: ICON.alert, size: 12 }),
-              h('span', null, audioNote),
-              h('button', {
-                type: 'button', className: 'ss-btn sm ghost',
-                onClick: () => restartAudio('手动重载', playhead),
-              }, '重载音频'),
-            ) : null,
-          ) : null,
+            }) : null,
+          ),
           h(PageBoundary, { key: page, onHome: () => goStudio('songs') }, body),
         ),
         h('input', {
           ref: fileRef, type: 'file', accept: 'audio/*', style: { display: 'none' },
           onChange: (e) => { const f = e.target.files?.[0]; e.target.value = ''; upload(f) },
         }),
+        trainConflict ? h('div', {
+          className: 'ss-modal-mask',
+          role: 'dialog',
+          'aria-modal': 'true',
+          'aria-label': trainConflict.kind === 'resume' ? '上次训练未完成' : '同名训练已存在',
+          onClick: (e) => { if (e.target === e.currentTarget && !trainConfirming) setTrainConflict(null) },
+        },
+          h('div', { className: 'ss-modal' },
+            h('div', { className: 'ss-modal-title' },
+              trainConflict.kind === 'resume' ? '上次训练未完成' : '同名训练已存在'),
+            trainConflict.kind === 'resume'
+              ? h(React.Fragment, null,
+                h('div', { className: 'ss-modal-text' },
+                  trainConflict.resumable?.lastEpoch > 0
+                    ? `「${trainConflict.form?.name || ''}」上次训练到第 ${trainConflict.resumable.lastEpoch} / ${trainConflict.resumable.totalEpochs || '?'} 轮，是否继续？继续会复用已经切好的片段、F0 和 HuBERT 特征，并从最新检查点接着训练。`
+                    : trainConflict.resumable?.hasCheckpoint
+                      ? `「${trainConflict.form?.name || ''}」上次训练刚开始就中断了，已经保存了检查点，是否继续？`
+                      : `「${trainConflict.form?.name || ''}」上次训练没走到训练阶段，是否继续？继续会复用已经完成的切分 / F0 / HuBERT 结果。`),
+                h('ul', { className: 'ss-modal-list' },
+                  h('li', null, `检查点目录：${trainConflict.resumable?.expDir || ''}`),
+                  h('li', null, trainConflict.resumable?.hasCheckpoint
+                    ? '已找到训练检查点（G_*.pth），会从检查点继续'
+                    : '没有训练检查点，会从特征提取之后继续')),
+              )
+              : h(React.Fragment, null,
+                h('div', { className: 'ss-modal-text' },
+                  `继续会用「${trainConflict.form?.name || ''}」这个模型名重新训练。是否清除下面这些旧数据？删除后无法恢复；想保留旧模型就点「取消」，换一个模型名再训练。`),
+                h('ul', { className: 'ss-modal-list' },
+                  (trainConflict.conflicts || []).map((item) => h('li', { key: item }, item))),
+              ),
+            h('div', { className: 'ss-modal-actions' },
+              h('button', { className: 'ss-btn ghost', disabled: trainConfirming, onClick: () => setTrainConflict(null) }, '取消'),
+              trainConflict.kind === 'resume'
+                ? h(React.Fragment, null,
+                  h('button', { className: 'ss-btn danger', disabled: trainConfirming, onClick: confirmOverwriteTraining }, '重新开始'),
+                  h('button', { className: 'ss-btn primary', disabled: trainConfirming, onClick: confirmResumeTraining },
+                    trainConfirming ? '处理中…' : '继续训练'),
+                )
+                : h('button', { className: 'ss-btn danger', disabled: trainConfirming, onClick: confirmOverwriteTraining },
+                  trainConfirming ? '清除中…' : '清除并重新训练'),
+            ),
+          ),
+        ) : null,
         toast ? h('div', { className: 'ss-toast ' + (toast.kind === 'bad' ? 'bad' : ''), role: 'status', 'aria-live': 'polite' }, toast.text) : null,
       )
     }
