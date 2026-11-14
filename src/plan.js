@@ -7,6 +7,12 @@ function pow2(x) {
   return Math.pow(2, x / OCT);
 }
 
+function clampPitchShift(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return 0;
+  return Math.max(-12, Math.min(12, Math.round(n)));
+}
+
 function frameShiftArray(analysis, shifts) {
   const n = analysis.f0.length;
   const arr = new Int16Array(n);
@@ -76,26 +82,32 @@ function segmentRangeCost(analysis, seg, shift, profile) {
 
 function buildOctaveCandidates(analysis, profile, opts) {
   const maxOct = Math.max(0, Math.min(3, opts.maxOctaves ?? 2));
+  const baseShift = clampPitchShift(opts.pitchShift ?? 0);
   const target = opts.targetCoverage ?? 0.95;
   const loC = profile.p5;
   const hiC = profile.p95;
   const loH = profile.p1;
   const hiH = profile.p99;
+  const comfortOf = (s) => coverageOf(analysis.f0, analysis.rms, s, loC, hiC);
+  const hardOf = (s) => coverageOf(analysis.f0, analysis.rms, s, loH, hiH);
   const list = [];
   for (let k = -maxOct; k <= maxOct; k++) {
-    const s = k * OCT;
-    const comfort = coverageOf(analysis.f0, analysis.rms, s, loC, hiC);
-    const hard = coverageOf(analysis.f0, analysis.rms, s, loH, hiH);
-    // 只有能和模型极限区产生实际重叠的八度才值得作为候选。
-    if (s !== 0 && hard < 0.08) continue;
+    const s = baseShift + k * OCT;
+    const comfort = comfortOf(s);
+    const hard = hardOf(s);
+    // 只有能和模型极限区产生实际重叠的八度才值得作为候选；用户指定的整体变调始终保留。
+    if (s !== baseShift && hard < 0.08) continue;
     list.push({ semitones: s, octaves: k, comfort, hard });
   }
-  if (!list.some((x) => x.semitones === 0)) {
-    list.push({ semitones: 0, octaves: 0, comfort: coverageOf(analysis.f0, analysis.rms, 0, loC, hiC), hard: coverageOf(analysis.f0, analysis.rms, 0, loH, hiH) });
+  if (!list.some((x) => x.semitones === baseShift)) {
+    list.push({ semitones: baseShift, octaves: 0, comfort: comfortOf(baseShift), hard: hardOf(baseShift) });
   }
-  list.sort((a, b) => (b.comfort - a.comfort) || (Math.abs(a.semitones) - Math.abs(b.semitones)));
+  list.sort((a, b) => (b.comfort - a.comfort) || (Math.abs(a.semitones - baseShift) - Math.abs(b.semitones - baseShift)));
   const keep = list.slice(0, Math.max(2, Math.min(6, opts.maxCandidates ?? 4)));
-  if (!keep.some((x) => x.semitones === 0)) keep.push(list.find((x) => x.semitones === 0));
+  if (!keep.some((x) => x.semitones === baseShift)) {
+    const base = list.find((x) => x.semitones === baseShift);
+    if (base) keep.push(base);
+  }
   keep.sort((a, b) => a.semitones - b.semitones);
   // 目标只是提示，不在这里裁剪；保留数据给 UI 显示。
   for (const x of keep) x.meets = x.comfort >= target;
@@ -213,18 +225,9 @@ function unresolvedOf(analysis, shifts, profile, threshold = 0.5) {
   return out;
 }
 
-export function buildPlans(analysis, profile, options = {}) {
-  const opts = {
-    targetCoverage: 0.95,
-    maxOctaves: 2,
-    maxCandidates: 4,
-    changePenalty: 4,
-    boundaryMinGap: 0.12,
-    intraSectionPenalty: 1.5,
-    ...options,
-  };
+function planForShift(analysis, profile, opts, baseShift, autoPitch) {
   const target = opts.targetCoverage;
-  const candidates = buildOctaveCandidates(analysis, profile, opts);
+  const candidates = buildOctaveCandidates(analysis, profile, { ...opts, pitchShift: baseShift });
   const phrases = withSectionIds(analysis, analysis.phrases || [], analysis.sections || []);
   const sections = (analysis.sections || []).map((s, i) => ({ ...s, section: i, phrase: i }));
 
@@ -247,12 +250,19 @@ export function buildPlans(analysis, profile, options = {}) {
     });
   };
 
-  // 原曲 0
-  add('none', '原曲 0', 'none', phrases.map((p) => ({ start: p.start, end: p.end, from: p.from, to: p.to, semitones: 0 })));
+  // 整体变调基线：没设置半音偏移时就是原曲 0；设置后作为「整体 +N」参与比较。
+  const baseRowId = baseShift === 0 ? 'none' : 'pitch';
+  add(baseRowId, baseShift === 0 ? '原曲 0' : `整体 ${baseShift > 0 ? '+' : ''}${baseShift}`,
+    baseShift === 0 ? 'none' : 'pitch',
+    phrases.map((p) => ({ start: p.start, end: p.end, from: p.from, to: p.to, semitones: baseShift })));
+  if (autoPitch) {
+    const baseRow = table.find((r) => r.id === baseRowId);
+    if (baseRow) baseRow.autoPitch = true;
+  }
 
-  // 全局：每个候选八度都列出来，便于对比。
+  // 全局：每个候选八度都列出来，便于对比；整体变调基线不重复。
   for (const c of candidates) {
-    if (c.semitones === 0) continue;
+    if (c.semitones === baseShift) continue;
     add(`global-${c.semitones}`, `全局 ${c.semitones > 0 ? '+' : ''}${c.semitones}`, 'global',
       phrases.map((p) => ({ start: p.start, end: p.end, from: p.from, to: p.to, semitones: c.semitones })));
   }
@@ -277,8 +287,8 @@ export function buildPlans(analysis, profile, options = {}) {
   }
 
   const meets = (row) => row.coverage.comfort >= target;
-  const priority = ['none', 'global', 'section', 'phrase'];
-  let selected = table.find((r) => r.id === 'none' && meets(r)) || null;
+  const priority = ['none', 'pitch', 'global', 'section', 'phrase'];
+  let selected = table.find((r) => (r.id === 'none' || r.id === 'pitch') && meets(r)) || null;
   if (!selected) {
     for (const level of priority) {
       const rows = table.filter((r) => r.level === level && meets(r));
@@ -295,6 +305,8 @@ export function buildPlans(analysis, profile, options = {}) {
 
   return {
     target,
+    pitchShift: baseShift,
+    autoPitch,
     candidates,
     table,
     selectedId: selected.id,
@@ -302,4 +314,54 @@ export function buildPlans(analysis, profile, options = {}) {
     phraseCount: phrases.length,
     sectionCount: sections.length,
   };
+}
+
+// 自动搜索时比较最终推荐的方案：先覆盖率，再极限覆盖、变调次数、未解决乐句和偏移量。
+function compareAuto(a, b) {
+  const A = a.selected || {};
+  const B = b.selected || {};
+  const ac = A.coverage?.comfort ?? 0;
+  const bc = B.coverage?.comfort ?? 0;
+  if (bc !== ac) return bc - ac;
+  const ah = A.coverage?.hard ?? 0;
+  const bh = B.coverage?.hard ?? 0;
+  if (bh !== ah) return bh - ah;
+  const ach = A.changes ?? 0;
+  const bch = B.changes ?? 0;
+  if (ach !== bch) return ach - bch;
+  const au = A.unresolved?.length || 0;
+  const bu = B.unresolved?.length || 0;
+  if (au !== bu) return au - bu;
+  // 最终方案打平时，优先整体覆盖率更高的基准，避免在 ±N 之间随意选一个。
+  const abase = a.table.find((r) => r.id === 'pitch' || r.id === 'none')?.coverage?.comfort ?? 0;
+  const bbase = b.table.find((r) => r.id === 'pitch' || r.id === 'none')?.coverage?.comfort ?? 0;
+  if (bbase !== abase) return bbase - abase;
+  const abaseHard = a.table.find((r) => r.id === 'pitch' || r.id === 'none')?.coverage?.hard ?? 0;
+  const bbaseHard = b.table.find((r) => r.id === 'pitch' || r.id === 'none')?.coverage?.hard ?? 0;
+  if (bbaseHard !== abaseHard) return bbaseHard - abaseHard;
+  return Math.abs(a.pitchShift) - Math.abs(b.pitchShift);
+}
+
+export function buildPlans(analysis, profile, options = {}) {
+  const opts = {
+    targetCoverage: 0.95,
+    maxOctaves: 2,
+    maxCandidates: 4,
+    pitchShift: 'auto',
+    changePenalty: 4,
+    boundaryMinGap: 0.12,
+    intraSectionPenalty: 1.5,
+    ...options,
+  };
+  const requested = opts.pitchShift;
+  // 自动模式遍历 -12～+12 半音，对每个偏移生成完整方案，再按最终推荐方案的覆盖率取最优。
+  if (requested === 'auto' || requested === true || requested == null) {
+    let best = null;
+    for (let shift = -12; shift <= 12; shift++) {
+      const result = planForShift(analysis, profile, opts, shift, true);
+      if (!best || compareAuto(result, best) < 0) best = result;
+    }
+    return best;
+  }
+  return planForShift(analysis, profile, opts, clampPitchShift(requested), false);
 }

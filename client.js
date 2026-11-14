@@ -75,7 +75,7 @@ window.__ModuleLoader__.load({
       return `${Math.floor(m / 60)} 小时 ${String(m % 60).padStart(2, '0')} 分`
     }
     const planLevelLabel = (level) => ({
-      global: '全局八度', section: '分段八度', phrase: '乐句八度', none: '原曲 0',
+      global: '全局八度', section: '分段八度', phrase: '乐句八度', none: '原曲 0', pitch: '整体变调',
     }[level] || '方案')
     const fmtMB = (bytes) => {
       const v = Number(bytes) || 0
@@ -162,6 +162,14 @@ window.__ModuleLoader__.load({
     }
     const trainFormOf = (saved) => ({ ...TRAIN_DEFAULTS, ...(saved && typeof saved === 'object' ? saved : {}) })
 
+    const PITCH_SHIFT_OPTIONS = [
+      ['auto', '自动（按覆盖率搜索）'],
+      ...Array.from({ length: 25 }, (_, i) => {
+        const value = i - 12
+        return [value, value === 0 ? '0 · 不额外变调' : `${value > 0 ? '+' : ''}${value} 半音`]
+      }),
+    ]
+
     const SETTING_GROUPS = [
       {
         id: 'netease',
@@ -178,8 +186,9 @@ window.__ModuleLoader__.load({
         title: '八度规划与混音',
         tip: '覆盖率目标、候选范围与变调混音。',
         items: [
+          { key: 'pitchShift', label: '整体变调', select: PITCH_SHIFT_OPTIONS, tip: '自动会遍历 -12～+12 半音，选最终覆盖率最高的方案；也可以手动固定一个值。' },
           { key: 'targetCoverage', label: '目标覆盖率（0–1）', type: 'number', step: '0.01', tip: '舒适区覆盖率目标；默认 0.95。' },
-          { key: 'maxOctaves', label: '候选八度上限（±N）', type: 'number', step: '1', tip: '最多向上下各移几个八度；默认 2。' },
+          { key: 'maxOctaves', label: '候选八度上限（±N，0–3）', type: 'number', step: '1', min: 0, max: 3, integer: true, tip: '可填 0–3；实际候选还会按音色音域重叠过滤，通常只保留能落进 Profile 的八度。默认 2。' },
           { key: 'protect', label: 'protect（0–0.5）', type: 'number', step: '0.01', tip: '保护清辅音和呼吸声；越高越保留原音细节。' },
           { key: 'rmsMixRate', label: 'rms mix rate', type: 'number', step: '0.01', tip: '输出响度包络与原唱的混合比例（0–1）。' },
           { key: 'crossfadeMs', label: '交叉淡化（ms）', type: 'number', step: '10', tip: '段落衔接的淡入淡出长度。' },
@@ -1319,8 +1328,16 @@ window.__ModuleLoader__.load({
           }, spec.select.map(([v, text]) => h('option', { key: String(v), value: String(v) }, text)))
         } else if (spec.type === 'number') {
           input = h('input', {
-            className: 'ss-input', type: 'number', step: spec.step || '1', value: value ?? '',
-            onChange: (e) => set(key, Number(e.target.value)),
+            className: 'ss-input', type: 'number', step: spec.step || '1',
+            min: spec.min, max: spec.max, value: value ?? '',
+            onChange: (e) => {
+              let next = Number(e.target.value)
+              if (!Number.isFinite(next)) return
+              if (spec.integer) next = Math.round(next)
+              if (spec.min != null) next = Math.max(spec.min, next)
+              if (spec.max != null) next = Math.min(spec.max, next)
+              set(key, next)
+            },
           })
         } else {
           const type = spec.type === 'password' ? 'password' : 'text'
@@ -1978,7 +1995,7 @@ window.__ModuleLoader__.load({
         const row = (plans?.table || []).find((x) => samePlan(x, render))
         const level = render.level || ''
         return row?.label
-          || (level === 'global' ? '全局八度' : level === 'section' ? '分段八度' : level === 'phrase' ? '乐句八度' : level === 'none' ? '原曲 0' : '方案')
+          || (level === 'global' ? '全局八度' : level === 'section' ? '分段八度' : level === 'phrase' ? '乐句八度' : level === 'pitch' ? '整体变调' : level === 'none' ? '原曲 0' : '方案')
       }
       // 播放条标题：方案 · 后端；下拉选项：方案 · 生成时间（同一方案多次生成时用来区分）。
       const renderLabel = (render, withStamp) => {
@@ -1996,7 +2013,7 @@ window.__ModuleLoader__.load({
           id: `render-${selectedRender.id}`,
           label: (() => {
             const level = selectedRender.level || ''
-            return level === 'global' ? '全局八度' : level === 'section' ? '分段八度' : level === 'phrase' ? '乐句八度' : level === 'none' ? '原曲 0' : '已缓存版本'
+            return level === 'global' ? '全局八度' : level === 'section' ? '分段八度' : level === 'phrase' ? '乐句八度' : level === 'pitch' ? '整体变调' : level === 'none' ? '原曲 0' : '已缓存版本'
           })(),
           level: selectedRender.level || '',
           shifts: selectedRender.shifts || [],
@@ -4132,7 +4149,7 @@ window.__ModuleLoader__.load({
                         className: 'ss-radio', type: 'radio', checked: row.id === selectedId,
                         onChange: () => pickPlan(row.id),
                       })),
-                      h('td', null, h('strong', null, row.label), row.id === plans.selectedId ? h('span', { className: 'ss-tag good', style: { marginLeft: 6 } }, '推荐') : null),
+                      h('td', null, h('strong', null, row.label), row.autoPitch ? h('span', { className: 'ss-tag', style: { marginLeft: 6 }, title: '自动搜索选出的整体半音偏移；分段 / 乐句方案会在此基础上继续调整八度' }, '自动') : null, row.id === plans.selectedId ? h('span', { className: 'ss-tag good', style: { marginLeft: 6 } }, '推荐') : null),
                       h('td', null, pct(row.coverage.comfort)),
                       h('td', null, pct(row.coverage.hard)),
                       h('td', null, String(row.changes)),

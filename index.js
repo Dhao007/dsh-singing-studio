@@ -254,6 +254,7 @@ export function apply(ctx, config = {}) {
     soulxPromptSeconds: settings.soulxPromptSeconds,
     soulxPromptWav: settings.soulxPromptWav,
     targetCoverage: settings.targetCoverage,
+    pitchShift: settings.pitchShift,
     maxOctaves: settings.maxOctaves,
     maxCandidates: settings.maxCandidates,
     protect: settings.protect,
@@ -1100,13 +1101,15 @@ export function apply(ctx, config = {}) {
         profile = v.profile
         planVoice = v.id
       }
-      const result = buildPlans(analysis, profile, {
+      const planOptions = {
         targetCoverage: settings.targetCoverage,
+        pitchShift: settings.pitchShift,
         maxOctaves: settings.maxOctaves,
         maxCandidates: settings.maxCandidates,
         ...options,
-      })
-      const planId = sha1([analysisId, JSON.stringify(options), JSON.stringify(result.candidates)].join('|'))
+      }
+      const result = buildPlans(analysis, profile, planOptions)
+      const planId = sha1([analysisId, JSON.stringify(planOptions), JSON.stringify(result.candidates), String(result.pitchShift ?? ''), result.autoPitch ? 'auto' : 'manual'].join('|'))
       writeJson(dataDir('plans', `${planId}.json`), {
         id: planId, analysisId, voiceId: planVoice, createdAt: Date.now(), options, result,
       })

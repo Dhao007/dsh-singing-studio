@@ -101,6 +101,7 @@ export function defaultSettings(projectRoot = '', runtimeRoot = '') {
     soulxPromptWav: '',
     autoWarmup: false,
     targetCoverage: 0.95,
+    pitchShift: 'auto',
     maxOctaves: 2,
     maxCandidates: 4,
     protect: 0.25,
