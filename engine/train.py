@@ -656,6 +656,12 @@ class Trainer:
                     pass
 
         self.run_child(args, on_line)
+        if self.stop_file.exists():
+            # The inner RVC trainer exits successfully after saving its latest
+            # checkpoint. Stop the outer pipeline here so cancellation cannot
+            # be reported as a completed training run.
+            self.save_state("已取消", lastEpoch=int(self.state.get("lastEpoch") or self.epoch))
+            raise SystemExit(130)
         self.train_finished = time.time()
         self.epoch = self.total_epochs
         self.epoch_pct = 0.0

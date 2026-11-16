@@ -810,7 +810,22 @@ export function apply(ctx, config = {}) {
         const result = readJson(resultFile, null)
         if (!result) throw new Error('训练进程结束但没有写出结果文件')
         return result
-      }, { datasetPath: dataset, name, label, sr, version, epochs, auditionEvery, resume: wantsResume })
+      }, { datasetPath: dataset, name, label, sr, version, epochs, auditionEvery, resume: wantsResume }, {
+        onCancel: () => {
+          // Windows cannot deliver a reliable graceful signal to this
+          // subprocess tree. During the actual training stage, ask the inner
+          // RVC trainer to save its latest checkpoint via the STOP file.
+          if (process.platform !== 'win32' || jobs.running?.stage !== '训练') return false
+          try {
+            const stopFile = join(settings.rvcDir, 'logs', name, 'STOP')
+            ensureDir(join(settings.rvcDir, 'logs', name))
+            writeFileSync(stopFile, 'stop', 'utf8')
+            return true
+          } catch {
+            return false
+          }
+        },
+      })
       return sendJson(res, 200, { ok: true, job: jobs.get(job.id) })
     }
 
