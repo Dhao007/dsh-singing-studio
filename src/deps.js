@@ -194,6 +194,14 @@ export function findPython(settings) {
     candidates.push({ cmd: 'python', args: [] })
   } else {
     for (const v of ['python3.12', 'python3.11', 'python3.10', 'python3', 'python']) candidates.push({ cmd: v, args: [] })
+    // Finder-launched macOS apps often do not inherit Homebrew's PATH.
+    // Probe the two standard Homebrew prefixes explicitly so a normal
+    // `brew install python@3.12` is usable without manual path configuration.
+    for (const prefix of ['/opt/homebrew/bin', '/usr/local/bin']) {
+      for (const v of ['python3.12', 'python3.11', 'python3.10']) {
+        candidates.push({ cmd: join(prefix, v), args: [] })
+      }
+    }
   }
   for (const item of candidates) {
     const r = runSync(item.cmd, [...item.args, '-c', 'import sys;print("%d.%d" % sys.version_info[:2])'], 6000)

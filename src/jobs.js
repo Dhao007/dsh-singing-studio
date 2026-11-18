@@ -61,7 +61,7 @@ export class Jobs {
     try { this.onUpdate(publicJob(job)) } catch {}
   }
 
-  create(type, fn, meta = {}) {
+  create(type, fn, meta = {}, { onCancel } = {}) {
     const job = {
       id: randomUUID().replace(/-/g, '').slice(0, 16),
       type,
@@ -74,6 +74,7 @@ export class Jobs {
       createdAt: Date.now(),
       result: null,
       _fn: fn,
+      _onCancel: onCancel,
     }
     this.map.set(job.id, job)
     this.queue.push(job)
@@ -162,7 +163,18 @@ export class Jobs {
     }
     if (job.status === 'running') {
       job.cancelled = true
-      killChildTree(job._child)
+      let deferredKill = false
+      try { deferredKill = Boolean(job._onCancel?.()) } catch {}
+      if (!deferredKill) {
+        killChildTree(job._child)
+      } else if (job._child) {
+        // A graceful cancellation must still have an upper bound. The training
+        // process writes its checkpoint at a step boundary before exiting.
+        const child = job._child
+        setTimeout(() => {
+          if (job._child === child && job.status === 'cancelled') killChildTree(child)
+        }, 180 * 1000).unref?.()
+      }
       job.status = 'cancelled'
       job.stage = '已取消'
       job.endedAt = Date.now()
