@@ -1,0 +1,17 @@
+__pycache__/
+*.py[cod]
+dist/
+*.tgz
+*.log
+client.log
+.DS_Store
+*.pth
+*.pt
+*.onnx
+*.ckpt
+*.safetensors
+*.wav
+*.mp3
+*.flac
+*.m4a
+*.index
