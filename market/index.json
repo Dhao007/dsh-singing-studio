@@ -80,13 +80,13 @@
           "singing"
         ],
         "sortKeys": {
-          "published": 1794399044
+          "published": 1795321316
         }
       },
       "versions": [
         {
           "version": "0.1.0",
-          "publishTimestamp": 1794399044,
+          "publishTimestamp": 1795321316,
           "source": {
             "type": "npm",
             "registry": "https://registry.npmmirror.com/"
