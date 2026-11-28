@@ -161,11 +161,14 @@ def clip_grad_value_(parameters, clip_value, norm_type=2):
     if clip_value is not None:
         clip_value = float(clip_value)
 
-    total_norm = 0
+    norms = []
     for p in parameters:
         param_norm = p.grad.data.norm(norm_type)
-        total_norm += param_norm.item() ** norm_type
+        norms.append(param_norm)
         if clip_value is not None:
             p.grad.data.clamp_(min=-clip_value, max=clip_value)
-    total_norm = total_norm ** (1.0 / norm_type)
-    return total_norm
+    if not norms:
+        return 0.0
+    # Transfer all norms together; CPU float64 also works with non-CUDA backends.
+    total_norm = torch.stack(norms).to(device="cpu", dtype=torch.float64).pow(norm_type).sum().item()
+    return total_norm ** (1.0 / norm_type)

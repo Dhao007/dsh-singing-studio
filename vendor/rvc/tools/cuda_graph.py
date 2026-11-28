@@ -11,6 +11,7 @@ logger = logging.getLogger(__name__)
 
 ENV_NAME = "RVC_CUDA_GRAPH"
 MAX_CACHE_ENV = "RVC_CUDA_GRAPH_MAX_CACHE"
+MIN_CALLS_ENV = "RVC_CUDA_GRAPH_MIN_CALLS"
 _probe_lock = threading.Lock()
 _probe_result = None
 
@@ -147,6 +148,7 @@ class _CapturedCall:
 class _GraphCache:
     def __init__(self):
         self.entries = OrderedDict()
+        self.pending = OrderedDict()
         self.failures = set()
         self.lock = threading.RLock()
         self.capture_count = 0
@@ -154,6 +156,7 @@ class _GraphCache:
         self.fallback_count = 0
         self.eviction_count = 0
         self.capture_ms = 0.0
+        self.deferred_count = 0
 
     def run(self, key, function, inputs):
         signature = key + tuple(_tensor_signature(value) for value in inputs)
@@ -163,12 +166,21 @@ class _GraphCache:
                 return function(*inputs)
             entry = self.entries.get(signature)
             if entry is None:
+                max_entries = max(1, int(os.environ.get(MAX_CACHE_ENV, "8")))
+                min_calls = max(1, int(os.environ.get(MIN_CALLS_ENV, "3")))
+                calls = self.pending.pop(signature, 0) + 1
+                if calls < min_calls:
+                    # One-off audio lengths should not pay capture/warmup costs.
+                    self.pending[signature] = calls
+                    while len(self.pending) > max_entries * 4:
+                        self.pending.popitem(last=False)
+                    self.deferred_count += 1
+                    return function(*inputs)
                 try:
                     entry = _CapturedCall(function, inputs)
                     self.entries[signature] = entry
                     self.capture_count += 1
                     self.capture_ms += entry.capture_ms
-                    max_entries = max(1, int(os.environ.get(MAX_CACHE_ENV, "8")))
                     while len(self.entries) > max_entries:
                         self.entries.popitem(last=False)
                         self.eviction_count += 1
@@ -199,6 +211,7 @@ def clear_cuda_graph_cache(owner):
     cache = getattr(owner, "_rvc_cuda_graph_cache", None)
     if cache is not None:
         cache.entries.clear()
+        cache.pending.clear()
         cache.failures.clear()
         delattr(owner, "_rvc_cuda_graph_cache")
 
@@ -214,6 +227,8 @@ def get_cuda_graph_stats(owner):
             "fallbacks": 0,
             "evictions": 0,
             "capture_ms": 0.0,
+            "pending": 0,
+            "deferred": 0,
         }
     with cache.lock:
         return {
@@ -224,4 +239,6 @@ def get_cuda_graph_stats(owner):
             "fallbacks": cache.fallback_count,
             "evictions": cache.eviction_count,
             "capture_ms": cache.capture_ms,
+            "pending": len(cache.pending),
+            "deferred": cache.deferred_count,
         }

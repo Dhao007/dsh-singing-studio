@@ -36,6 +36,7 @@ class SoulxEngine:
         self.model.load_state_dict(checkpoint["state_dict"], strict=True)
         self.model.eval()
         self.model.to(torch.device(self.device))
+        self._prompt_cache = None
         self.loaded = True
 
     def status(self):
@@ -107,6 +108,28 @@ class SoulxEngine:
             curve[b - r:b] = np.linspace(v, 0.0, r, endpoint=False)
         return curve
 
+    def _prepare_prompt(self, prompt_path, seconds):
+        seconds = float(seconds)
+        if not np.isfinite(seconds) or seconds <= 0:
+            raise ValueError("promptSeconds must be finite and positive")
+        max_len = max(1, int(seconds * SAMPLE_RATE))
+        path = Path(prompt_path).expanduser().resolve()
+        stat = path.stat()
+        key = (str(path), stat.st_mtime_ns, stat.st_ctime_ns, stat.st_size,
+               max_len, str(self.device))
+        if self._prompt_cache is None or self._prompt_cache[0] != key:
+            # Keep only the latest voice; do not retain the full source waveform.
+            self._prompt_cache = None
+            prompt = self._load_wav(str(path))[..., :max_len].clone()
+            f0 = self._fit(self._f0(prompt), int(round(prompt.shape[-1] / SAMPLE_RATE * FPS)))
+            wav = prompt.to(torch.device(self.device))
+            pitch = torch.from_numpy(f0).unsqueeze(0).to(wav.device)
+            with torch.no_grad():
+                mel = self.model.mel(wav.float())
+            self._prompt_cache = (key, (wav, pitch, mel))
+        # Inference implementations may modify conditioning tensors in place.
+        return tuple(value.clone() for value in self._prompt_cache[1])
+
     def render(self, input_path, analysis_path, plan_path, prompt_path, out_path, params, progress=None):
         from common import load_json
         progress = progress or (lambda *_: None)
@@ -127,20 +150,15 @@ class SoulxEngine:
             voiced = f0 > 0
             f0[voiced] = f0[voiced] * np.power(2.0, curve[voiced] / 12.0)
 
-        prompt = self._load_wav(prompt_path)
-        max_len = int(float(params.get("promptSeconds", 12)) * SAMPLE_RATE)
-        if prompt.shape[-1] > max_len:
-            prompt = prompt[..., :max_len]
-        pt_f0 = self._fit(self._f0(prompt), int(round(prompt.shape[-1] / SAMPLE_RATE * FPS)))
+        pt_wav, pt_f0_t, pt_mel = self._prepare_prompt(
+            prompt_path, params.get("promptSeconds", 12)
+        )
 
         device = torch.device(self.device)
-        pt_wav = prompt.to(device)
         gt_wav = target.to(device)
-        pt_f0_t = torch.from_numpy(pt_f0).unsqueeze(0).to(device)
         gt_f0_t = torch.from_numpy(f0).unsqueeze(0).to(device)
         progress("infer", 0.12)
         with torch.no_grad():
-            pt_mel = self.model.mel(pt_wav.float())
             overlap_segments, segments = self.model.build_vocal_segments(
                 gt_f0_t.squeeze(0), f0_rate=FPS, uv_frames_th=10,
                 min_duration_sec=15.0, max_duration_sec=30.0,
